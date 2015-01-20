@@ -1,0 +1,18 @@
+# Copyright (c) 2015 Qualcomm Atheros, Inc.
+#
+# All Rights Reserved.
+# Qualcomm Atheros Confidential and Proprietary.
+#
+# ESS Receiving Flow Steering
+#
+
+config QCA_RFS
+	tristate "QCA Receiving Flow Steering"
+	depends on NF_CONNTRACK
+	---help---
+	  QCA RFS module is a flow steering manager on ESS receiving.
+
+	  To compile this code as a module, choose M here: the module will be
+	  called qca_ess_rfs.
+
+	  If unsure, say N.
