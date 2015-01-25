@@ -197,11 +197,11 @@ static int rfs_wxt_iwevent(int ifindex, unsigned char *buf, size_t len)
 			cpu = rfs_wxt_get_cpu(ifindex);
 			if (cpu < 0 )
 				return -1;
-			rfs_rule_create_mac_rule((unsigned char*) iwe->u.addr.sa_data, (uint16_t)cpu);
+			rfs_rule_create_mac_rule((unsigned char*) iwe->u.addr.sa_data, (uint16_t)cpu, 0);
 		}
 		else if (iwe->cmd == IWEVEXPIRED) {
 			RFS_DEBUG("STA %pM leaving\n", (unsigned char*) iwe->u.addr.sa_data);
-			rfs_rule_destroy_mac_rule((unsigned char*) iwe->u.addr.sa_data);
+			rfs_rule_destroy_mac_rule((unsigned char*) iwe->u.addr.sa_data, 0);
 		}
 
 		pos += iwe->len;

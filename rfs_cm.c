@@ -28,8 +28,8 @@
 /*
  * Definition for RX hash debugging.
  * Debugging only, don't enable it when releasing
+ * #define DEBUG_ESS_SKB_RXHASH 1
  */
-#define DEBUG_ESS_SKB_RXHASH 1
 
 #define RFS_CONNECTION_HASH_SHIFT 10
 #define RFS_CONNECTION_HASH_SIZE (1 << RFS_CONNECTION_HASH_SHIFT)
@@ -144,7 +144,6 @@ int rfs_cm_conneciton_create(struct rfs_cm_ipv4_connection *conn)
 	}
 
 	memcpy(ce, conn, sizeof(struct rfs_cm_ipv4_connection));
-	ce->cpu = RPS_NO_CPU;
 	hlist_add_head_rcu(&ce->conn_hlist, head);
 
 	if (ce->flag & RFS_CM_FLAG_SNAT) {
@@ -173,9 +172,8 @@ int rfs_cm_conneciton_create(struct rfs_cm_ipv4_connection *conn)
 	else
 		cpu = rfs_rule_get_cpu_by_ipaddr(conn->reply_src_ip);
 
-	if (cpu != RPS_NO_CPU &&
-	    rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, cpu) >= 0) {
-		ce->cpu = cpu;
+	if (ce->cpu != RPS_NO_CPU) {
+	    rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, ce->cpu);
 	}
 	spin_unlock_bh(&cm->hash_lock);
 	return 0;
@@ -239,7 +237,6 @@ static int rfs_cm_connection_destroy(struct rfs_cm_ipv4_connection *conn)
 
 	if (ce->cpu != RPS_NO_CPU ) {
 	    rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, RPS_NO_CPU);
-		ce->cpu = RPS_NO_CPU;
 	}
 
 
@@ -509,6 +506,8 @@ static int rfs_cm_conntrack_event(unsigned int events, struct nf_ct_event *item)
 		return NOTIFY_DONE;
 	}
 
+
+	conn.cpu = RPS_NO_CPU;
 	if (snat) {
 		conn.flag |= RFS_CM_FLAG_SNAT;
 		conn.reply_rxhash =
@@ -516,6 +515,7 @@ static int rfs_cm_conntrack_event(unsigned int events, struct nf_ct_event *item)
 					   conn.reply_dest_ip,
 					   conn.reply_src_port,
 					   conn.reply_dest_port);
+		conn.cpu = rfs_rule_get_cpu_by_ipaddr(conn.orig_src_ip);
 	}
 
 	if (dnat) {
@@ -525,6 +525,7 @@ static int rfs_cm_conntrack_event(unsigned int events, struct nf_ct_event *item)
 					   conn.orig_dest_ip,
 					   conn.orig_src_port,
 					   conn.orig_dest_port);
+		conn.cpu = rfs_rule_get_cpu_by_ipaddr(conn.reply_src_ip);
 	}
 
 	if (events & ((1 << IPCT_NEW) | (1 << IPCT_RELATED))) {
@@ -671,11 +672,11 @@ static unsigned int __rfs_cm_ipv4_post_routing_hook(
 		    dir == IP_CT_DIR_ORIGINAL?"original":"reply");
 
 	if (snat) {
-		RFS_INFO("Rx hash 0x%08x, calc 0x%08x\n", skb->rxhash, conn.reply_rxhash);
+		RFS_DEBUG("Rx hash 0x%08x, calc 0x%08x\n", skb->rxhash, conn.reply_rxhash);
 	}
 
 	if (dnat) {
-		RFS_INFO("Rx hash 0x%08x, calc 0x%08x\n", skb->rxhash, conn.orig_rxhash);
+		RFS_DEBUG("Rx hash 0x%08x, calc 0x%08x\n", skb->rxhash, conn.orig_rxhash);
 	}
 	return NF_ACCEPT;
 }
@@ -701,7 +702,7 @@ int rfs_cm_init(void)
 	int result = -1;
 	struct rfs_cm *cm = &__cm;
 
-	RFS_DEBUG("RFS CM init\n");
+	RFS_DEBUG("RFS cm init\n");
 	spin_lock_init(&cm->hash_lock);
 #ifdef CONFIG_NF_CONNTRACK_EVENTS
 	/*
@@ -732,7 +733,7 @@ void rfs_cm_exit(void)
 {
 
 	struct rfs_cm *cm = &__cm;
-	RFS_DEBUG("SFE CM exit\n");
+	RFS_DEBUG("RFS cm exit\n");
 
 #ifdef DEBUG_ESS_SKB_RXHASH
 	nf_unregister_hooks(rfs_cm_nf_hooks, ARRAY_SIZE(rfs_cm_nf_hooks));

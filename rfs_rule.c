@@ -26,21 +26,6 @@
 #include "rfs_ess.h"
 #include "rfs_nbr.h"
 
-struct rfs_rule_entry {
-        struct hlist_node hlist;
-	struct rcu_head rcu;
-	uint32_t type;
-	union {
-		uint8_t mac[ETH_ALEN];
-		__be32  ip4addr;
-	} u;
-	uint32_t flag;
-        uint16_t cpu;
-};
-
-#define RFS_RULE_TYPE_MAC_RULE 1
-#define RFS_RULE_TYPE_IP4_RULE 2
-
 
 #define RFS_RULE_HASH_SHIFT 8
 #define RFS_RULE_HASH_SIZE (1 << RFS_RULE_HASH_SHIFT)
@@ -69,6 +54,8 @@ unsigned int rfs_rule_hash(uint32_t type, uint8_t *data)
 		return jhash(data, ETH_ALEN, 0) & RFS_RULE_HASH_MASK;
 	case RFS_RULE_TYPE_IP4_RULE:
 		return jhash(data, 4, 0) & RFS_RULE_HASH_MASK;
+	case RFS_RULE_TYPE_IP6_RULE:
+		return jhash(data, sizeof(struct in6_addr), 0) & RFS_RULE_HASH_MASK;
 	default:
 		return 0;
 	}
@@ -87,9 +74,119 @@ static void rfs_rule_rcu_free(struct rcu_head *head)
 
 
 /*
+ * rfs_rule_ip_equal
+ */
+static inline int rfs_rule_ip_equal(int family, uint8_t *ipaddr1, uint8_t *ipaddr2)
+{
+	if (family ==AF_INET)
+		return (*(__be32*)ipaddr1 == *(__be32*)ipaddr2);
+	else
+		return !memcmp(ipaddr1, ipaddr2, sizeof(struct in6_addr));
+}
+
+
+/*
+ * rfs_rule_get_cpu
+ *	The caller should hold rcu_read_lock
+ */
+static uint16_t __rfs_rule_get_cpu(uint32_t type, uint8_t *addr)
+{
+	struct hlist_head *head;
+	struct rfs_rule_entry *re;
+	struct rfs_rule *rr = &__rr;
+	uint16_t cpu = RPS_NO_CPU;
+
+	head = &rr->hash[rfs_rule_hash(type, addr)];
+	hlist_for_each_entry_rcu(re, head, hlist) {
+		if (type != re->type)
+			continue;
+
+		if (type == RFS_RULE_TYPE_MAC_RULE) {
+			if (memcmp(re->mac, addr, ETH_ALEN) == 0) {
+				break;
+			}
+		}
+		else if (type == RFS_RULE_TYPE_IP4_RULE) {
+			if (re->u.ip4addr ==  *(__be32*)addr) {
+				break;
+			}
+		}
+		else if (type == RFS_RULE_TYPE_IP6_RULE) {
+			if (!memcmp(&re->u.ip6addr, addr, sizeof(struct in6_addr))) {
+				break;
+			}
+		}
+	}
+
+	if (re)
+		cpu = re->cpu;
+
+	return cpu;
+}
+
+
+/*
+ * rfs_rule_get_cpu_by_ipaddr
+ */
+uint16_t rfs_rule_get_cpu_by_ipaddr(__be32 ipaddr)
+{
+	uint16_t cpu;
+	uint32_t type = RFS_RULE_TYPE_IP4_RULE;
+
+	rcu_read_lock();
+	cpu = __rfs_rule_get_cpu(type, (uint8_t *)&ipaddr);
+	rcu_read_unlock();
+
+	return cpu;
+}
+
+
+/*
+ * rfs_rule_update_iprule_by_mac
+ *	Caller should hold rcu_read_lock
+ */
+static void __rfs_rule_update_iprule_by_mac(uint8_t *addr, uint16_t cpu)
+{
+	int index;
+	struct hlist_head *head;
+	struct rfs_rule_entry *re;
+	struct rfs_rule *rr = &__rr;
+
+	for ( index = 0; index < RFS_RULE_HASH_SIZE; index++) {
+		struct hlist_node *n;
+		head = &rr->hash[index];
+		hlist_for_each_entry_safe(re, n, head, hlist) {
+			if (re->type != RFS_RULE_TYPE_IP4_RULE
+				&& re->type != RFS_RULE_TYPE_IP6_RULE)
+				continue;
+
+			if (re->is_static)
+				continue;
+
+			if (memcmp(re->mac, addr, ETH_ALEN))
+				continue;
+
+			if (re->cpu == cpu)
+				continue;
+
+			if (rfs_ess_update_ip_rule(re, cpu) < 0) {
+				if (re->type == RFS_RULE_TYPE_IP4_RULE)
+					RFS_WARN("Failed to update IP rule %pI4, cpu %d\n", addr, cpu);
+				else
+					RFS_WARN("Failed to update IP rule %pI6, cpu %d\n", addr, cpu);
+			}
+			re->cpu = cpu;
+
+		}
+	}
+}
+
+
+
+/*
  * rfs_rule_create_mac_rule
  */
-int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu)
+int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu, uint32_t is_static)
 {
 	struct hlist_head *head;
 	struct rfs_rule_entry *re;
@@ -103,12 +200,15 @@ int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu)
 		if (type != re->type)
 			continue;
 
-		if (memcmp(re->u.mac, addr, ETH_ALEN) == 0) {
+		if (memcmp(re->mac, addr, ETH_ALEN) == 0) {
 			break;
 		}
 	}
 
 	if (re) {
+		if (is_static) {
+			re->is_static = 1;
+		}
 		spin_unlock_bh(&rr->hash_lock);
 		return 0;
 	}
@@ -122,17 +222,19 @@ int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu)
 		return -1;
 	}
 
-	memcpy(re->u.mac, addr, ETH_ALEN);
+	memcpy(re->mac, addr, ETH_ALEN);
 	re->type = type;
 	re->cpu = cpu;
+	re->is_static = is_static;
 	hlist_add_head_rcu(&re->hlist, head);
 
 
-	RFS_INFO("New MAC rule %pM, cpu %d\n", addr, cpu);
-	if (rfs_ess_update_mac_rule(addr, cpu) < 0) {
+	RFS_DEBUG("New MAC rule %pM, cpu %d\n", addr, cpu);
+	if (rfs_ess_update_mac_rule(re, cpu) < 0) {
 		RFS_WARN("Failed to update MAC rule %pM, cpu %d\n", addr, cpu);
 	}
 
+	__rfs_rule_update_iprule_by_mac(addr, cpu);
 	spin_unlock_bh(&rr->hash_lock);
 	return 0;
 }
@@ -141,7 +243,7 @@ int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu)
 /*
  * rfs_rule_destroy_mac_rule
  */
-int rfs_rule_destroy_mac_rule(uint8_t *addr)
+int rfs_rule_destroy_mac_rule(uint8_t *addr, uint32_t is_static)
 {
 	struct hlist_head *head;
 	struct rfs_rule_entry *re;
@@ -156,12 +258,12 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr)
 		if (type != re->type)
 			continue;
 
-		if (memcmp(re->u.mac, addr, ETH_ALEN) == 0) {
+		if (memcmp(re->mac, addr, ETH_ALEN) == 0) {
 			break;
 		}
 	}
 
-	if (!re) {
+	if (!re || (re->is_static && !is_static)) {
 		spin_unlock_bh(&rr->hash_lock);
 		return 0;
 	}
@@ -170,12 +272,14 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr)
 	cpu = re->cpu;
 	re->cpu = RPS_NO_CPU;
 
-	RFS_INFO("Remove rules: %pM, cpu %d\n", addr, cpu);
-	if (rfs_ess_update_mac_rule(addr, RPS_NO_CPU) < 0) {
+	RFS_DEBUG("Remove rules: %pM, cpu %d\n", addr, cpu);
+	if (rfs_ess_update_mac_rule(re, RPS_NO_CPU) < 0) {
 		RFS_WARN("Failed to update mac rules: %pM, cpu %d\n", addr, cpu);
 	}
 
 	call_rcu(&re->rcu, rfs_rule_rcu_free);
+
+	__rfs_rule_update_iprule_by_mac(addr, RPS_NO_CPU);
 	spin_unlock_bh(&rr->hash_lock);
 
 	return 0;
@@ -185,26 +289,33 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr)
 /*
  * rfs_rule_create_ip_rule
  */
-int rfs_rule_create_ip_rule(uint8_t *addr, uint16_t cpu)
+int rfs_rule_create_ip_rule(int family, uint8_t *ipaddr, uint8_t *maddr, uint32_t is_static)
 {
 	struct hlist_head *head;
 	struct rfs_rule_entry *re;
 	struct rfs_rule *rr = &__rr;
-	uint32_t type = RFS_RULE_TYPE_IP4_RULE;
+	uint32_t type;
 
-	head = &rr->hash[rfs_rule_hash(type, addr)];
+
+	if (family == AF_INET)
+		type = RFS_RULE_TYPE_IP4_RULE;
+	else
+		type = RFS_RULE_TYPE_IP6_RULE;
+
+	head = &rr->hash[rfs_rule_hash(type, ipaddr)];
 
 	spin_lock_bh(&rr->hash_lock);
 	hlist_for_each_entry_rcu(re, head, hlist) {
 		if (type != re->type)
 			continue;
 
-		if (re->u.ip4addr ==  *(__be32*)addr) {
+		if (rfs_rule_ip_equal(family, (uint8_t *)&re->u.ip4addr, ipaddr))
 			break;
-		}
 	}
 
 	if (re) {
+		if (is_static)
+			re->is_static = 1;
 		spin_unlock_bh(&rr->hash_lock);
 		return 0;
 	}
@@ -218,18 +329,35 @@ int rfs_rule_create_ip_rule(uint8_t *addr, uint16_t cpu)
 		return -1;
 	}
 
-	re->u.ip4addr =  *(__be32*)addr;
+	if (family ==AF_INET)
+		re->u.ip4addr =  *(__be32*)ipaddr;
+	else
+		memcpy(&re->u.ip6addr, ipaddr, sizeof(struct in6_addr));
 	re->type = type;
-	re->cpu = cpu;
+	re->is_static = is_static;
+	memcpy(re->mac, maddr, ETH_ALEN);
 	hlist_add_head_rcu(&re->hlist, head);
 
+	/*
+	 * Look up MAC rules
+	 */
+	re->cpu = __rfs_rule_get_cpu(RFS_RULE_TYPE_MAC_RULE, maddr);
 
-	RFS_INFO("New IP rule %pI4, cpu %d\n", addr, cpu);
-	if (rfs_ess_update_ip_rule(AF_INET, addr, cpu) < 0) {
-		RFS_WARN("Failed to update IP rule %pI4, cpu %d\n", addr, cpu);
+	if (family ==AF_INET)
+		RFS_DEBUG("New IP rule %pI4, cpu %d\n", ipaddr, re->cpu);
+	else
+		RFS_DEBUG("New IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
+
+	if (re->cpu != RPS_NO_CPU &&
+		rfs_ess_update_ip_rule(re, re->cpu) < 0) {
+		if (re->type == RFS_RULE_TYPE_IP4_RULE)
+			RFS_WARN("Failed to create IP rule %pI4, cpu %d\n", ipaddr, re->cpu);
+		else
+			RFS_WARN("Failed to create IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
 	}
-
 	spin_unlock_bh(&rr->hash_lock);
+
+
 	return 0;
 }
 
@@ -237,7 +365,7 @@ int rfs_rule_create_ip_rule(uint8_t *addr, uint16_t cpu)
 /*
  * rfs_rule_destroy_ip_rule
  */
-int rfs_rule_destroy_ip_rule(uint8_t *addr)
+int rfs_rule_destroy_ip_rule(int family, uint8_t *ipaddr, uint32_t is_static)
 {
 	struct hlist_head *head;
 	struct rfs_rule_entry *re;
@@ -245,19 +373,18 @@ int rfs_rule_destroy_ip_rule(uint8_t *addr)
 	uint32_t type = RFS_RULE_TYPE_IP4_RULE;
 	uint16_t cpu;
 
-	head = &rr->hash[rfs_rule_hash(type, addr)];
+	head = &rr->hash[rfs_rule_hash(type, ipaddr)];
 
 	spin_lock_bh(&rr->hash_lock);
 	hlist_for_each_entry_rcu(re, head, hlist) {
 		if (type != re->type)
 			continue;
 
-		if (re->u.ip4addr ==  *(__be32*)addr) {
+		if (rfs_rule_ip_equal(family, (uint8_t *)&re->u.ip4addr, ipaddr))
 			break;
-		}
 	}
 
-	if (!re) {
+	if (!re || (re->is_static && !is_static)) {
 		spin_unlock_bh(&rr->hash_lock);
 		return 0;
 	}
@@ -266,9 +393,17 @@ int rfs_rule_destroy_ip_rule(uint8_t *addr)
 	cpu = re->cpu;
 	re->cpu = RPS_NO_CPU;
 
-	RFS_INFO("Remove rules: %pI4, cpu %d\n", addr, cpu);
-	if (rfs_ess_update_ip_rule(AF_INET, addr, RPS_NO_CPU) < 0) {
-		RFS_WARN("Failed to update ip rules: %pI4, cpu %d\n", addr, cpu);
+	if (family ==AF_INET)
+		RFS_DEBUG("Remove IP rule %pI4, cpu %d\n", ipaddr, cpu);
+	else
+		RFS_DEBUG("Remove IP rule %pI6, cpu %d\n", ipaddr, cpu);
+
+	if (cpu != RPS_NO_CPU &&
+		rfs_ess_update_ip_rule(re, RPS_NO_CPU) < 0) {
+		if (re->type == RFS_RULE_TYPE_IP4_RULE)
+			RFS_WARN("Failed to remove IP rule %pI4, cpu %d\n", ipaddr, re->cpu);
+		else
+			RFS_WARN("Failed to remove IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
 	}
 
 	call_rcu(&re->rcu, rfs_rule_rcu_free);
@@ -279,7 +414,38 @@ int rfs_rule_destroy_ip_rule(uint8_t *addr)
 
 
 /*
+ * rfs_rule_reset_all
+ *	This function will be called when VLAN changed
+ */
+void rfs_rule_reset_all(void)
+{
+	int index;
+	struct hlist_head *head;
+	struct rfs_rule_entry *re;
+	struct rfs_rule *rr = &__rr;
+
+	spin_lock_bh(&rr->hash_lock);
+	for ( index = 0; index < RFS_RULE_HASH_SIZE; index++) {
+		struct hlist_node *n;
+		head = &rr->hash[index];
+		hlist_for_each_entry_safe(re, n, head, hlist) {
+			if (re->cpu == RPS_NO_CPU)
+				continue;
+			if (re->type == RFS_RULE_TYPE_MAC_RULE)
+				rfs_ess_update_mac_rule(re, re->cpu);
+			else
+				rfs_ess_update_ip_rule(re, re->cpu);
+
+		}
+	}
+	spin_unlock_bh(&rr->hash_lock);
+}
+
+
+
+/*
  * rfs_rule_destroy_all
+ *	Clear the rules and free the rules' entry
  */
 static void rfs_rule_destroy_all(void)
 {
@@ -293,96 +459,18 @@ static void rfs_rule_destroy_all(void)
 		struct hlist_node *n;
 		head = &rr->hash[index];
 		hlist_for_each_entry_safe(re, n, head, hlist) {
+			if (re->cpu != RPS_NO_CPU) {
+				if (re->type == RFS_RULE_TYPE_MAC_RULE)
+					rfs_ess_update_mac_rule(re, RPS_NO_CPU);
+				else
+					rfs_ess_update_ip_rule(re, RPS_NO_CPU);
+			}
 			hlist_del_rcu(&re->hlist);
 			rfs_rule_rcu_free(&re->rcu);
 
 		}
 	}
 	spin_unlock_bh(&rr->hash_lock);
-}
-
-
-/*
- * rfs_rule_get_cpu
- */
-static uint16_t rfs_rule_get_cpu(uint32_t type, uint8_t *addr)
-{
-	struct hlist_head *head;
-	struct rfs_rule_entry *re;
-	struct rfs_rule *rr = &__rr;
-	uint16_t cpu = RPS_NO_CPU;
-
-	head = &rr->hash[rfs_rule_hash(RFS_RULE_TYPE_MAC_RULE, addr)];
-	rcu_read_lock();
-	hlist_for_each_entry_rcu(re, head, hlist) {
-		if (type != re->type)
-			continue;
-
-		if (type == RFS_RULE_TYPE_MAC_RULE) {
-			if (memcmp(re->u.mac, addr, ETH_ALEN) == 0) {
-				break;
-			}
-		}
-		else if (type == RFS_RULE_TYPE_IP4_RULE) {
-			if (re->u.ip4addr ==  *(__be32*)addr) {
-				break;
-			}
-		}
-	}
-
-	if (re)
-		cpu = re->cpu;
-
-	rcu_read_unlock();
-	return cpu;
-}
-
-
-/*
- * rfs_rule_get_cpu_by_ipaddr
- */
-uint16_t rfs_rule_get_cpu_by_ipaddr(__be32 ipaddr)
-{
-	uint16_t cpu = RPS_NO_CPU;
-	uint32_t type = RFS_RULE_TYPE_IP4_RULE;
-	/*
-	 * Static IP rules firstly
-	 */
-	cpu = rfs_rule_get_cpu(type, (uint8_t *)&ipaddr);
-
-	if (cpu != RPS_NO_CPU)
-		return cpu;
-
-	/*
-	 * Look up the neighbor who has the dynamic rule
-	 */
-	cpu = rfs_nbr_get_cpu_by_ipaddr(AF_INET, (uint8_t *)&ipaddr);
-	return cpu;
-}
-
-
-/*
- * rfs_rule_get_cpu_by_imaddr
- */
-uint16_t rfs_rule_get_cpu_by_imaddr(int family, uint8_t *ipaddr, uint8_t *maddr)
-{
-	uint16_t cpu = RPS_NO_CPU;
-	uint32_t type;
-
-	/*
-	 * IP rules have more priority than MAC rules
-	 */
-	if (family == AF_INET) {
-		type = RFS_RULE_TYPE_IP4_RULE;
-		cpu = rfs_rule_get_cpu(type, ipaddr);
-	}
-
-	if (cpu != RPS_NO_CPU)
-		return cpu;
-
-	type = RFS_RULE_TYPE_MAC_RULE;
-	cpu = rfs_rule_get_cpu(type, maddr);
-	return cpu;
 }
 
 
@@ -406,9 +494,24 @@ static int rfs_rule_proc_show(struct seq_file *m, void *v)
 		hlist_for_each_entry_rcu(re, head, hlist) {
 			seq_printf(m, "%03d hash %08x", ++count, index);
 			if (re->type == RFS_RULE_TYPE_MAC_RULE)
-				seq_printf(m, " MAC: %pM cpu %d\n", re->u.mac, re->cpu);
+				seq_printf(m, " MAC: %pM cpu %d", re->mac, re->cpu);
+			else if (re->type == RFS_RULE_TYPE_IP4_RULE)
+				seq_printf(m, " IP: %pI4 cpu %d", &re->u.ip4addr, re->cpu);
 			else
-				seq_printf(m, " IP: %pI4 cpu %d\n", &re->u.ip4addr, re->cpu);
+				seq_printf(m, " IP: %pI6 cpu %d", &re->u.ip4addr, re->cpu);
+
+			if (re->nvid) {
+				int i;
+				seq_printf(m, " vid");
+				for (i = 0; i < re->nvid; i++) {
+					seq_printf(m, " %d", re->vid[i]);
+					if (re->type != RFS_RULE_TYPE_MAC_RULE) {
+						seq_printf(m, "@%pM", &re->vmac[ETH_ALEN * i]);
+					}
+				}
+			}
+
+			seq_putc(m, '\n');
 
 		}
 	}
@@ -448,9 +551,9 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 		mac[4] = addr[4];
 		mac[5] = addr[5];
 		if ((uint16_t)cpu != RPS_NO_CPU)
-			rfs_rule_create_mac_rule(mac, (uint16_t)cpu);
+			rfs_rule_create_mac_rule(mac, (uint16_t)cpu, 1);
 		else
-			rfs_rule_destroy_mac_rule(mac);
+			rfs_rule_destroy_mac_rule(mac, 1);
 		return count;
 	}
 
@@ -458,14 +561,15 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 			&addr[2], &addr[3], &cpu);
 	if (nvar == 5) {
 		uint8_t  ip[4];
+		uint8_t  mac[6] = {0};
 		ip[0] = addr[0];
 		ip[1] = addr[1];
 		ip[2] = addr[2];
 		ip[3] = addr[3];
 		if ((uint16_t)cpu != RPS_NO_CPU)
-			rfs_rule_create_ip_rule(ip, (uint16_t)cpu);
+			rfs_rule_create_ip_rule(AF_INET, ip, mac, 1);
 		else
-			rfs_rule_destroy_ip_rule(ip);
+			rfs_rule_destroy_ip_rule(AF_INET, ip, 1);
 		return count;
 	}
 
