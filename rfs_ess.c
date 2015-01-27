@@ -1,11 +1,21 @@
 /*
+ * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ *
+ * Permission to use, copy, modify, and/or distribute this software for
+ * any purpose with or without fee is hereby granted, provided that the
+ * above copyright notice and this permission notice appear in all copies.
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
  * rfs_ess.c
  *	Receiving Flow Streering - Ethernet Subsystem API
- *
- * Copyright (c) 2015 Qualcomm Atheros, Inc.
- *
- * All Rights Reserved.
- * Qualcomm Atheros Confidential and Proprietary.
  */
 
 #include <linux/module.h>
@@ -18,6 +28,7 @@
 #include <net/route.h>
 #include <net/sock.h>
 #include <asm/byteorder.h>
+#include <qca-ssdk/fal/fal_rfs.h>
 
 #include "rfs.h"
 #include "rfs_rule.h"
@@ -111,6 +122,7 @@ static uint32_t rfs_ess_compute_hash(char *buf, int len, char *key)
 
 	}
 
+	hash = (uint16_t)hash;
 	return hash;
 }
 
@@ -138,9 +150,64 @@ uint32_t rfs_ess_get_rxhash(__be32 sip, __be32 dip,
 
 
 /*
+ * rfs_ess_mac_rule_set
+ */
+static int rfs_ess_mac_rule_set(uint32_t vid, uint8_t *mac, uint16_t cpu)
+{
+	ssdk_fdb_rfs_t fdbt;
+	memcpy(fdbt.addr, mac, ETH_ALEN);
+	fdbt.fid = (uint16_t)vid;
+	fdbt.load_balance = (uint8_t)cpu;
+	if (cpu == RPS_NO_CPU) {
+		return ssdk_rfs_mac_rule_del(&fdbt);
+	} else {
+		return ssdk_rfs_mac_rule_set(&fdbt);
+	}
+}
+
+/*
+ * rfs_ess_ip4_rule_set
+ */
+static int rfs_ess_ip4_rule_set(uint32_t vid, __be32 ipaddr, uint8_t *mac, uint16_t cpu)
+{
+	ssdk_ip4_rfs_t ip4t;
+	memcpy(ip4t.mac_addr, mac, ETH_ALEN);
+	/*
+	 * network order(big endian) to little endian
+	 */
+	ip4t.ip4_addr = __swab32(ipaddr);
+	ip4t.vid = vid;
+	ip4t.load_balance = (uint8_t)cpu;
+	if (cpu == RPS_NO_CPU) {
+		return ssdk_ip_rfs_ip4_rule_del(&ip4t);
+	} else {
+		return ssdk_ip_rfs_ip4_rule_set(&ip4t);
+	}
+}
+
+
+/*
+ * rfs_ess_ip6_rule_set
+ */
+static int rfs_ess_ip6_rule_set(uint32_t vid, struct in6_addr *ipaddr, uint8_t *mac, uint16_t cpu)
+{
+	ssdk_ip6_rfs_t ip6t;
+	memcpy(ip6t.mac_addr, mac, ETH_ALEN);
+	memcpy(ip6t.ip6_addr, ipaddr, sizeof(ip6t.ip6_addr));
+	ip6t.vid = vid;
+	ip6t.load_balance = (uint8_t)cpu;
+	if (cpu == RPS_NO_CPU) {
+		return ssdk_ip_rfs_ip6_rule_del(&ip6t);
+	} else {
+		return ssdk_ip_rfs_ip6_rule_set(&ip6t);
+	}
+}
+
+
+/*
  * rfs_ess_create_vif
  */
-int rfs_ess_create_vif(int iswan, char *ifname)
+static int rfs_ess_create_vif(int iswan, char *ifname)
 {
 	struct rfs_ess *ess = &__ess;
 	struct rfs_vif *vif;
@@ -202,7 +269,7 @@ int rfs_ess_create_vif(int iswan, char *ifname)
 /*
  * rfs_ess_destroy_vifs
  */
-int rfs_ess_destroy_vifs(void)
+static int rfs_ess_destroy_vifs(void)
 {
 	struct rfs_ess *ess = &__ess;
 	struct rfs_vif *vif, *next;
@@ -229,23 +296,27 @@ int rfs_ess_destroy_vifs(void)
 }
 
 
-int rfs_ess_get_vid_wan(uint32_t *vid, uint8_t *vmac, uint32_t *num)
+/*
+ * rfs_ess_get_vid_wan
+ */
+static int rfs_ess_get_ifvid_wan(uint32_t *ifvid, uint8_t *ifmac, uint32_t *ifnum)
 {
 	struct rfs_vif *vif;
 	struct rfs_ess *ess = &__ess;
+	int array_size = *ifnum;
 
-	*num = 0;
+	*ifnum = 0;
 	vif = ess->wan;
 
 	spin_lock_bh(&ess->vif_lock);
 	while (vif) {
-		if (*num + 1 > MAX_VLAN_PORT) {
+		if (*ifnum + 1 > array_size) {
 			break;
 		}
-		vid[*num] = vif->vid;
-		memcpy(vmac, vif->mac, ETH_ALEN);
-		vmac += ETH_ALEN;
-		*num = *num +1;
+		ifvid[*ifnum] = vif->vid;
+		memcpy(ifmac, vif->mac, ETH_ALEN);
+		ifmac += ETH_ALEN;
+		*ifnum = *ifnum +1;
 		vif = vif->next;
 	}
 	spin_unlock_bh(&ess->vif_lock);
@@ -253,21 +324,31 @@ int rfs_ess_get_vid_wan(uint32_t *vid, uint8_t *vmac, uint32_t *num)
 	return 0;
 }
 
-int rfs_ess_get_vid_lan(uint32_t *vid, uint32_t *num)
+
+/*
+ * rfs_ess_get_vid_lan
+ */
+static int rfs_ess_get_ifvid_lan(uint32_t hvid, uint32_t *ifvid, uint32_t *ifnum)
 {
 	struct rfs_vif *vif;
 	struct rfs_ess *ess = &__ess;
+	int array_size = *ifnum;
 
-	*num = 0;
+	*ifnum = 0;
 	vif = ess->lan;
 
 	spin_lock_bh(&ess->vif_lock);
 	while (vif) {
-		if (*num + 1 > MAX_VLAN_PORT) {
+		if (hvid == vif->vid) {
+			vif = vif->next;
+			continue;
+		}
+
+		if (*ifnum + 1 > array_size) {
 			break;
 		}
-		vid[*num] = vif->vid;
-		*num = *num +1;
+		ifvid[*ifnum] = vif->vid;
+		*ifnum = *ifnum +1;
 		vif = vif->next;
 	}
 
@@ -279,45 +360,52 @@ int rfs_ess_get_vid_lan(uint32_t *vid, uint32_t *num)
 
 /*
  * rfs_ess_update_mac_rule
+ *	The parameter 'cpu' may differ from re->cpu
+ *	re->cpu          cpu
+ *	RPS_NO_CPU       cpuid              new rule
+ *	cpuid	         RPS_NO_CPU         clear rule
+ *	cpuid            cpuid              reset rule(vid change)
  */
 int rfs_ess_update_mac_rule(struct rfs_rule_entry *re, uint16_t cpu)
 {
 	int i;
-	uint32_t nvid;
-	uint32_t vid[MAX_VLAN_PORT];
+	uint32_t nvif;
+	uint32_t ifvid[MAX_VLAN_PORT];
 
 
 	/*
 	 * Get VLAN ID of LAN
 	 */
-	rfs_ess_get_vid_lan(vid, &nvid);
+	nvif = MAX_VLAN_PORT;
+	rfs_ess_get_ifvid_lan(re->hvid, ifvid, &nvif);
 
 
 	/*
 	 * Clear old  MAC rule
-	 * Todo: add SSDK APIs
 	 */
-	if (re->cpu != RPS_NO_CPU && re->nvid > 0) {
+	if (re->cpu != RPS_NO_CPU && re->nvif > 0) {
 		if (re->cpu == cpu &&
-			nvid == re->nvid &&
-			!memcmp(vid, re->vid, sizeof(uint32_t) * nvid)) {
+			nvif == re->nvif &&
+			!memcmp(ifvid, re->ifvid, sizeof(uint32_t) * nvif)) {
 			return 0;
 		}
 
-		RFS_DEBUG("Clear old MAC rule : address %pM cpu %d\n", re->mac, cpu);
-		for (i = 0; i < re->nvid; i++) {
+		RFS_DEBUG("Clear old MAC rule : address %pM cpu %d\n", re->mac, re->cpu);
 		/*for each vid*/
+		for (i = 0; i < re->nvif; i++) {
+			if (rfs_ess_mac_rule_set(re->ifvid[i], re->mac, RPS_NO_CPU) < 0) {
+				RFS_INFO("Failed to set ssdk rule: vid %d addr %pM cpu %d\n",
+					re->ifvid[i], re->mac, re->cpu);
+			}
 		}
-
-
 	}
 
 
-	re->nvid = nvid;
-	if (nvid == 0) {
+	re->nvif = nvif;
+	if (nvif == 0) {
 		return 0;
 	}
-	memcpy(re->vid, vid, sizeof(uint32_t) * nvid);
+	memcpy(re->ifvid, ifvid, sizeof(uint32_t) * nvif);
 
 	if (cpu == RPS_NO_CPU) {
 		return 0;
@@ -325,11 +413,14 @@ int rfs_ess_update_mac_rule(struct rfs_rule_entry *re, uint16_t cpu)
 
 	/*
 	 * Set MAC rule
-	 * Todo: add SSDK APIs
 	 */
 	RFS_DEBUG("Set MAC rule : address %pM cpu %d\n", re->mac, cpu);
-	for (i = 0; i < nvid; i++) {
-		/*for each vid*/
+	/*for each vid*/
+	for (i = 0; i < nvif; i++) {
+		if (rfs_ess_mac_rule_set(re->ifvid[i], re->mac, cpu) < 0) {
+			RFS_INFO("Failed to set ssdk rule: vid %d addr %pM cpu %d\n",
+				re->ifvid[i], re->mac, cpu);
+		}
 	}
 
 	return 0;
@@ -338,28 +429,34 @@ int rfs_ess_update_mac_rule(struct rfs_rule_entry *re, uint16_t cpu)
 
 /*
  * rfs_ess_update_ip_rule
+ *	The parameter 'cpu' may differ from re->cpu
+ *	re->cpu          cpu
+ *	RPS_NO_CPU       cpuid              new rule
+ *	cpuid	         RPS_NO_CPU         clear rule
+ *	cpuid            cpuid              reset rule(vid change)
  */
 int rfs_ess_update_ip_rule(struct rfs_rule_entry *re, uint16_t cpu)
 {
 	int i;
-	uint32_t nvid = 0;
-	uint32_t vid[MAX_VLAN_PORT];
-	uint8_t  vmac[MAX_VLAN_PORT * ETH_ALEN];
+	uint32_t nvif = 0;
+	uint32_t ifvid[MAX_VLAN_PORT];
+	uint8_t  ifmac[MAX_VLAN_PORT * ETH_ALEN];
+	int ret;
 
 	/*
-	 * Get VLAN ID of LAN
+	 * Get VLAN ID of WAN
 	 */
-	rfs_ess_get_vid_wan(vid, vmac, &nvid);
+	nvif = MAX_VLAN_PORT;
+	rfs_ess_get_ifvid_wan(ifvid, ifmac, &nvif);
 
 
 	/*
 	 * Clear old  IP rule
-	 * Todo: add SSDK APIs
 	 */
-	if (re->cpu != RPS_NO_CPU && re->nvid > 0) {
+	if (re->cpu != RPS_NO_CPU && re->nvif > 0) {
 		if (re->cpu == cpu &&
-			nvid == re->nvid &&
-			!memcmp(vid, re->vid, sizeof(uint32_t) * nvid)) {
+			nvif == re->nvif &&
+			!memcmp(ifvid, re->ifvid, sizeof(uint32_t) * nvif)) {
 			return 0;
 		}
 
@@ -367,25 +464,45 @@ int rfs_ess_update_ip_rule(struct rfs_rule_entry *re, uint16_t cpu)
 			RFS_DEBUG("Clear old IP rule : address %pI4 cpu %d\n", (__be32 *)&re->u.ip4addr, re->cpu);
 		else
 			RFS_DEBUG("Clear old IP rule : address %pI6 cpu %d\n", (__be32 *)&re->u.ip6addr, re->cpu);
-		for (i = 0; i < re->nvid; i++) {
+
 		/*for each vid*/
+		for (i = 0; i < re->nvif; i++) {
+			if (re->type == RFS_RULE_TYPE_IP4_RULE) {
+				ret = rfs_ess_ip4_rule_set(re->ifvid[i], re->u.ip4addr,
+					&re->ifmac[i * ETH_ALEN], RPS_NO_CPU);
+				if (ret < 0) {
+					RFS_INFO("Failed to clear ssdk rule: vid %d addr %pI4 cpu %d\n",
+						re->ifvid[i], &re->u.ip4addr, re->cpu);
+				}
+			} else {
+				ret = rfs_ess_ip6_rule_set(re->ifvid[i], &re->u.ip6addr,
+					&re->ifmac[i * ETH_ALEN], RPS_NO_CPU);
+				if (ret < 0) {
+					RFS_INFO("Failed to clear ssdk rule: vid %d addr %pI6 cpu %d\n",
+						re->ifvid[i], &re->u.ip6addr, re->cpu);
+				}
+			}
+
 		}
 
 	}
 
-	re->nvid = nvid;
-	if (nvid == 0) {
+	re->nvif = nvif;
+	if (nvif == 0) {
 		goto l4update;
 	}
-	memcpy(re->vid, vid, sizeof(uint32_t) * nvid);
-	memcpy(re->vmac, vmac, ETH_ALEN * nvid);
+	memcpy(re->ifvid, ifvid, sizeof(uint32_t) * nvif);
+	memcpy(re->ifmac, ifmac, ETH_ALEN * nvif);
 
+
+	/*
+	 * The caller just wants to clear the SSDK rule, no new rules will be set
+	 */
 	if (cpu == RPS_NO_CPU) {
 		goto l4update;
 	}
 	/*
 	 * Set IP rule
-	 * Todo: add SSDK APIs
 	 */
 	if (re->type == RFS_RULE_TYPE_IP4_RULE)
 		RFS_DEBUG("Set IP rule: IP: %pI4 cpu %d\n",
@@ -394,8 +511,23 @@ int rfs_ess_update_ip_rule(struct rfs_rule_entry *re, uint16_t cpu)
 		RFS_DEBUG("Set IP rule: IP: %pI6 cpu %d\n",
 			   (__be32 *)&re->u.ip6addr, cpu);
 
-	for (i = 0; i < re->nvid; i++) {
-		/*for each vid*/
+	/*for each vid*/
+	for (i = 0; i < re->nvif; i++) {
+		if (re->type == RFS_RULE_TYPE_IP4_RULE) {
+			ret = rfs_ess_ip4_rule_set(re->ifvid[i], re->u.ip4addr,
+				&re->ifmac[i * ETH_ALEN], cpu);
+			if (ret < 0) {
+				RFS_INFO("Failed to set ssdk rule: vid %d addr %pI4 ifaddr %pM cpu %d\n",
+						re->ifvid[i], &re->u.ip4addr, &re->ifmac[i * ETH_ALEN], cpu);
+			}
+		} else {
+			ret = rfs_ess_ip6_rule_set(re->ifvid[i], &re->u.ip6addr,
+				&re->ifmac[i * ETH_ALEN], cpu);
+			if (ret < 0) {
+				RFS_INFO("Failed to set ssdk rule: vid %d addr %pI6 ifaddr %pM cpu %d\n",
+						re->ifvid[i], &re->u.ip6addr, &re->ifmac[i * ETH_ALEN], cpu);
+			}
+		}
 	}
 
 
