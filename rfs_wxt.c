@@ -1,11 +1,21 @@
 /*
+ * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ *
+ * Permission to use, copy, modify, and/or distribute this software for
+ * any purpose with or without fee is hereby granted, provided that the
+ * above copyright notice and this permission notice appear in all copies.
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
  * rfs_wxt.c
  *	Receiving Flow Streering - Wireless Extension
- *
- * Copyright (c) 2015 Qualcomm Atheros, Inc.
- *
- * All Rights Reserved.
- * Qualcomm Atheros Confidential and Proprietary.
  */
 
 #include <linux/kernel.h>
@@ -197,7 +207,7 @@ static int rfs_wxt_iwevent(int ifindex, unsigned char *buf, size_t len)
 			cpu = rfs_wxt_get_cpu(ifindex);
 			if (cpu < 0 )
 				return -1;
-			rfs_rule_create_mac_rule((unsigned char*) iwe->u.addr.sa_data, (uint16_t)cpu, 0);
+			rfs_rule_create_mac_rule((unsigned char*) iwe->u.addr.sa_data, (uint16_t)cpu, 0, 0);
 		}
 		else if (iwe->cmd == IWEVEXPIRED) {
 			RFS_DEBUG("STA %pM leaving\n", (unsigned char*) iwe->u.addr.sa_data);

@@ -1,11 +1,21 @@
 /*
+ * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ *
+ * Permission to use, copy, modify, and/or distribute this software for
+ * any purpose with or without fee is hereby granted, provided that the
+ * above copyright notice and this permission notice appear in all copies.
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
  * rfs_cm.c
  *	Receiving Flow Streering - Connection Manager
- *
- * Copyright (c) 2015 Qualcomm Atheros, Inc.
- *
- * All Rights Reserved.
- * Qualcomm Atheros Confidential and Proprietary.
  */
 
 #include <linux/module.h>
@@ -384,11 +394,11 @@ static int rfs_cm_proc_show(struct seq_file *m, void *v)
 	for ( index = 0; index < RFS_CONNECTION_HASH_SIZE; index++) {
 		head = &cm->conn_hash[index];
 		hlist_for_each_entry_rcu(ce, head, conn_hlist) {
-			seq_printf(m, "%03d hash %08x proto %s flags: %08x, cpu %d:\n",
+			seq_printf(m, "%03d %04x proto %s flags: %08x cpu %d:\n",
 				   ++count, index,
 				   ce->protocol==IPPROTO_TCP?"TCP":"UDP",
 				   ce->flag, ce->cpu);
-			seq_printf(m, "\ts:%pI4:%u, d:%pI4:%u \t s:%pI4:%u, d:%pI4:%u\n",
+			seq_printf(m, "\ts:%pI4:%u d:%pI4:%u / s:%pI4:%u d:%pI4:%u\n",
 				   &ce->orig_src_ip, ntohs(ce->orig_src_port),
 				   &ce->orig_dest_ip, ntohs(ce->orig_dest_port),
 				   &ce->reply_src_ip, ntohs(ce->reply_src_port),

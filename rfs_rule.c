@@ -1,11 +1,21 @@
 /*
+ * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ *
+ * Permission to use, copy, modify, and/or distribute this software for
+ * any purpose with or without fee is hereby granted, provided that the
+ * above copyright notice and this permission notice appear in all copies.
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT
+ * OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+/*
  * rfs_rule.c
  *	Receiving Flow Streering - Rules
- *
- * Copyright (c) 2014 Qualcomm Atheros, Inc.
- *
- * All Rights Reserved.
- * Qualcomm Atheros Confidential and Proprietary.
  */
 
 #include <linux/module.h>
@@ -186,7 +196,7 @@ static void __rfs_rule_update_iprule_by_mac(uint8_t *addr, uint16_t cpu)
 /*
  * rfs_rule_create_mac_rule
  */
-int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu, uint32_t is_static)
+int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu, uint32_t hvid, uint32_t is_static)
 {
 	struct hlist_head *head;
 	struct rfs_rule_entry *re;
@@ -206,33 +216,41 @@ int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu, uint32_t is_static)
 	}
 
 	if (re) {
-		if (is_static) {
-			re->is_static = 1;
+		/*
+		 * don't overwrite any existing rule
+		 */
+		if (!is_static) {
+			spin_unlock_bh(&rr->hash_lock);
+			return 0;
 		}
-		spin_unlock_bh(&rr->hash_lock);
-		return 0;
 	}
 
 	/*
 	 * Create a rule entry if it doesn't exist
 	 */
-	re = kzalloc(sizeof(struct rfs_rule_entry), GFP_ATOMIC);
 	if (!re ) {
-		spin_unlock_bh(&rr->hash_lock);
-		return -1;
-	}
+		re = kzalloc(sizeof(struct rfs_rule_entry), GFP_ATOMIC);
+		if (!re ) {
+			spin_unlock_bh(&rr->hash_lock);
+			return -1;
+		}
 
-	memcpy(re->mac, addr, ETH_ALEN);
-	re->type = type;
-	re->cpu = cpu;
-	re->is_static = is_static;
-	hlist_add_head_rcu(&re->hlist, head);
+		memcpy(re->mac, addr, ETH_ALEN);
+		re->type = type;
+		re->cpu = RPS_NO_CPU;
+		re->hvid = hvid;
+		hlist_add_head_rcu(&re->hlist, head);
+	}
 
 
 	RFS_DEBUG("New MAC rule %pM, cpu %d\n", addr, cpu);
-	if (rfs_ess_update_mac_rule(re, cpu) < 0) {
+	if (re->cpu != cpu &&
+		rfs_ess_update_mac_rule(re, cpu) < 0) {
 		RFS_WARN("Failed to update MAC rule %pM, cpu %d\n", addr, cpu);
 	}
+
+	re->is_static = is_static;
+	re->cpu = cpu;
 
 	__rfs_rule_update_iprule_by_mac(addr, cpu);
 	spin_unlock_bh(&rr->hash_lock);
@@ -270,13 +288,13 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr, uint32_t is_static)
 
 	hlist_del_rcu(&re->hlist);
 	cpu = re->cpu;
-	re->cpu = RPS_NO_CPU;
 
 	RFS_DEBUG("Remove rules: %pM, cpu %d\n", addr, cpu);
 	if (rfs_ess_update_mac_rule(re, RPS_NO_CPU) < 0) {
 		RFS_WARN("Failed to update mac rules: %pM, cpu %d\n", addr, cpu);
 	}
 
+	re->cpu = RPS_NO_CPU;
 	call_rcu(&re->rcu, rfs_rule_rcu_free);
 
 	__rfs_rule_update_iprule_by_mac(addr, RPS_NO_CPU);
@@ -289,7 +307,8 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr, uint32_t is_static)
 /*
  * rfs_rule_create_ip_rule
  */
-int rfs_rule_create_ip_rule(int family, uint8_t *ipaddr, uint8_t *maddr, uint32_t is_static)
+int rfs_rule_create_ip_rule(int family, uint8_t *ipaddr, uint8_t *maddr,
+			    uint16_t cpu, uint32_t is_static)
 {
 	struct hlist_head *head;
 	struct rfs_rule_entry *re;
@@ -314,47 +333,58 @@ int rfs_rule_create_ip_rule(int family, uint8_t *ipaddr, uint8_t *maddr, uint32_
 	}
 
 	if (re) {
-		if (is_static)
-			re->is_static = 1;
-		spin_unlock_bh(&rr->hash_lock);
-		return 0;
+		/*
+		 * don't overwrite any existing rule
+		 */
+		if (!is_static) {
+			spin_unlock_bh(&rr->hash_lock);
+			return 0;
+		}
 	}
 
 	/*
 	 * Create a rule entry if it doesn't exist
 	 */
-	re = kzalloc(sizeof(struct rfs_rule_entry), GFP_ATOMIC);
-	if (!re ) {
-		spin_unlock_bh(&rr->hash_lock);
-		return -1;
-	}
+	if (!re) {
+		re = kzalloc(sizeof(struct rfs_rule_entry), GFP_ATOMIC);
+		if (!re ) {
+			spin_unlock_bh(&rr->hash_lock);
+			return -1;
+		}
 
-	if (family ==AF_INET)
-		re->u.ip4addr =  *(__be32*)ipaddr;
-	else
-		memcpy(&re->u.ip6addr, ipaddr, sizeof(struct in6_addr));
-	re->type = type;
-	re->is_static = is_static;
-	memcpy(re->mac, maddr, ETH_ALEN);
-	hlist_add_head_rcu(&re->hlist, head);
+		if (family ==AF_INET)
+			re->u.ip4addr =  *(__be32*)ipaddr;
+		else
+			memcpy(&re->u.ip6addr, ipaddr, sizeof(struct in6_addr));
+		re->type = type;
+		re->cpu  = RPS_NO_CPU;
+		memcpy(re->mac, maddr, ETH_ALEN);
+		hlist_add_head_rcu(&re->hlist, head);
+	}
 
 	/*
 	 * Look up MAC rules
 	 */
-	re->cpu = __rfs_rule_get_cpu(RFS_RULE_TYPE_MAC_RULE, maddr);
+	if (cpu == RPS_NO_CPU)
+		cpu = __rfs_rule_get_cpu(RFS_RULE_TYPE_MAC_RULE, maddr);
+
 
 	if (family ==AF_INET)
-		RFS_DEBUG("New IP rule %pI4, cpu %d\n", ipaddr, re->cpu);
+		RFS_DEBUG("New IP rule %pI4, cpu %d\n", ipaddr, cpu);
 	else
-		RFS_DEBUG("New IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
+		RFS_DEBUG("New IP rule %pI6, cpu %d\n", ipaddr, cpu);
 
-	if (re->cpu != RPS_NO_CPU &&
-		rfs_ess_update_ip_rule(re, re->cpu) < 0) {
+	if (re->cpu != cpu &&
+		rfs_ess_update_ip_rule(re, cpu) < 0) {
 		if (re->type == RFS_RULE_TYPE_IP4_RULE)
-			RFS_WARN("Failed to create IP rule %pI4, cpu %d\n", ipaddr, re->cpu);
+			RFS_WARN("Failed to create IP rule %pI4, cpu %d\n", ipaddr, cpu);
 		else
-			RFS_WARN("Failed to create IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
+			RFS_WARN("Failed to create IP rule %pI6, cpu %d\n", ipaddr, cpu);
 	}
+
+	re->is_static = is_static;
+	re->cpu = cpu;
+
 	spin_unlock_bh(&rr->hash_lock);
 
 
@@ -391,7 +421,6 @@ int rfs_rule_destroy_ip_rule(int family, uint8_t *ipaddr, uint32_t is_static)
 
 	hlist_del_rcu(&re->hlist);
 	cpu = re->cpu;
-	re->cpu = RPS_NO_CPU;
 
 	if (family ==AF_INET)
 		RFS_DEBUG("Remove IP rule %pI4, cpu %d\n", ipaddr, cpu);
@@ -406,6 +435,7 @@ int rfs_rule_destroy_ip_rule(int family, uint8_t *ipaddr, uint32_t is_static)
 			RFS_WARN("Failed to remove IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
 	}
 
+	re->cpu = RPS_NO_CPU;
 	call_rcu(&re->rcu, rfs_rule_rcu_free);
 	spin_unlock_bh(&rr->hash_lock);
 
@@ -492,21 +522,29 @@ static int rfs_rule_proc_show(struct seq_file *m, void *v)
 	for ( index = 0; index < RFS_RULE_HASH_SIZE; index++) {
 		head = &rr->hash[index];
 		hlist_for_each_entry_rcu(re, head, hlist) {
-			seq_printf(m, "%03d hash %08x", ++count, index);
+			seq_printf(m, "%03d %04x", ++count, index);
 			if (re->type == RFS_RULE_TYPE_MAC_RULE)
 				seq_printf(m, " MAC: %pM cpu %d", re->mac, re->cpu);
 			else if (re->type == RFS_RULE_TYPE_IP4_RULE)
-				seq_printf(m, " IP: %pI4 cpu %d", &re->u.ip4addr, re->cpu);
+				seq_printf(m, "  IP: %pI4 cpu %d", &re->u.ip4addr, re->cpu);
 			else
-				seq_printf(m, " IP: %pI6 cpu %d", &re->u.ip4addr, re->cpu);
+				seq_printf(m, "  IP: %pI6 cpu %d", &re->u.ip4addr, re->cpu);
 
-			if (re->nvid) {
+			if (re->is_static)
+				seq_printf(m, " static");
+			else
+				seq_printf(m, " dynamic");
+
+			if (re->type == RFS_RULE_TYPE_MAC_RULE)
+				seq_printf(m, " hvid %d", re->hvid);
+
+			if (re->nvif) {
 				int i;
-				seq_printf(m, " vid");
-				for (i = 0; i < re->nvid; i++) {
-					seq_printf(m, " %d", re->vid[i]);
+				seq_printf(m, " ifvid");
+				for (i = 0; i < re->nvif; i++) {
+					seq_printf(m, " %d", re->ifvid[i]);
 					if (re->type != RFS_RULE_TYPE_MAC_RULE) {
-						seq_printf(m, "@%pM", &re->vmac[ETH_ALEN * i]);
+						seq_printf(m, "@%pM", &re->ifmac[ETH_ALEN * i]);
 					}
 				}
 			}
@@ -532,17 +570,18 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 	unsigned int addr[6];
 	int nvar;
 	int cpu;
+	int vid = 0;
 
 	count = min(count, sizeof(buf) - 1);
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;
 	buf[count] = '\0';
 
-	nvar = sscanf(buf, "%02x:%02x:%02x:%02x:%02x:%02x %d",
+	nvar = sscanf(buf, "%02x:%02x:%02x:%02x:%02x:%02x %d %d",
 			&addr[0], &addr[1], &addr[2], &addr[3],
-			&addr[4], &addr[5], &cpu);
+			&addr[4], &addr[5], &cpu, &vid);
 
-	if (nvar == 7) {
+	if (nvar >= 7) {
 		uint8_t mac[6];
 		mac[0] = addr[0];
 		mac[1] = addr[1];
@@ -551,7 +590,7 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 		mac[4] = addr[4];
 		mac[5] = addr[5];
 		if ((uint16_t)cpu != RPS_NO_CPU)
-			rfs_rule_create_mac_rule(mac, (uint16_t)cpu, 1);
+			rfs_rule_create_mac_rule(mac, (uint16_t)cpu, vid, 1);
 		else
 			rfs_rule_destroy_mac_rule(mac, 1);
 		return count;
@@ -567,7 +606,7 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 		ip[2] = addr[2];
 		ip[3] = addr[3];
 		if ((uint16_t)cpu != RPS_NO_CPU)
-			rfs_rule_create_ip_rule(AF_INET, ip, mac, 1);
+			rfs_rule_create_ip_rule(AF_INET, ip, mac, (uint16_t)cpu, 1);
 		else
 			rfs_rule_destroy_ip_rule(AF_INET, ip, 1);
 		return count;
