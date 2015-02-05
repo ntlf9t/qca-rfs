@@ -335,7 +335,7 @@ static void rfs_wxt_thread(void)
 	memset(&saddr, 0, sizeof(struct sockaddr));
 	saddr.nl_family = AF_NETLINK;
 	saddr.nl_groups = RTNLGRP_LINK;
-	saddr.nl_pid    = __rwn.thread->pid;
+	saddr.nl_pid    = current->pid;
 
 	err = __rwn.sock->ops->bind(__rwn.sock, (struct sockaddr*)&saddr, sizeof(struct sockaddr));
 	if (err < 0) {
@@ -367,12 +367,11 @@ exit1:
 	return;
 }
 
-
-/*
- * rfs_wxt_init
- */
-int rfs_wxt_init(void)
+int rfs_wxt_start(void)
 {
+	if (__rwn.thread) {
+		return 0;
+	}
 
 	__rwn.thread = kthread_run((void*)rfs_wxt_thread, NULL, "rfs_wxt");
 	if (IS_ERR(__rwn.thread)) {
@@ -385,22 +384,38 @@ int rfs_wxt_init(void)
 }
 
 
-/*
- * rfs_wxt_exit
- */
-void rfs_wxt_exit(void)
+int rfs_wxt_stop(void)
 {
 	int err;
 
 	if (__rwn.thread == NULL) {
-		return;
+		return 0;
 	}
 
 	RFS_DEBUG("kill rfs_wxt thread");
 	force_sig(SIGKILL, __rwn.thread);
 	err = kthread_stop(__rwn.thread);
-	RFS_DEBUG("leaving wxt\n");
+	__rwn.thread = NULL;
 
+	return err;
+}
+
+/*
+ * rfs_wxt_init
+ */
+int rfs_wxt_init(void)
+{
+	return 0;
+}
+
+
+/*
+ * rfs_wxt_exit
+ */
+void rfs_wxt_exit(void)
+{
+	RFS_DEBUG("leaving wxt\n");
+	rfs_wxt_stop();
 }
 
 

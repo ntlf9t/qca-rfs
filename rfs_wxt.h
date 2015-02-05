@@ -20,6 +20,8 @@
 
 #ifndef __RFS_WXT_H
 #define __RFS_WXT_H
+int rfs_wxt_start(void);
+int rfs_wxt_stop(void);
 int rfs_wxt_init(void);
 void rfs_wxt_exit(void);
 #endif
