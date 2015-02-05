@@ -56,6 +56,7 @@ int rfs_rule_create_ip_rule(int family, uint8_t *ipaddr, uint8_t *maddr, uint16_
 int rfs_rule_destroy_ip_rule(int family, uint8_t *addr, uint32_t is_static);
 uint16_t rfs_rule_get_cpu_by_ipaddr(__be32 ipaddr);
 void rfs_rule_reset_all(void);
+void rfs_rule_destroy_all(void);
 
 int rfs_rule_init(void);
 void rfs_rule_exit(void);

@@ -477,7 +477,7 @@ void rfs_rule_reset_all(void)
  * rfs_rule_destroy_all
  *	Clear the rules and free the rules' entry
  */
-static void rfs_rule_destroy_all(void)
+void rfs_rule_destroy_all(void)
 {
 	int index;
 	struct hlist_head *head;
@@ -496,8 +496,8 @@ static void rfs_rule_destroy_all(void)
 					rfs_ess_update_ip_rule(re, RPS_NO_CPU);
 			}
 			hlist_del_rcu(&re->hlist);
-			rfs_rule_rcu_free(&re->rcu);
-
+			re->cpu = RPS_NO_CPU;
+			call_rcu(&re->rcu, rfs_rule_rcu_free);
 		}
 	}
 	spin_unlock_bh(&rr->hash_lock);
@@ -571,6 +571,11 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 	int nvar;
 	int cpu;
 	int vid = 0;
+
+	if (!rfs_is_enabled())
+	{
+		return -EFAULT;
+	}
 
 	count = min(count, sizeof(buf) - 1);
 	if (copy_from_user(buf, buffer, count))

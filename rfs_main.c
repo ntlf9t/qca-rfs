@@ -37,6 +37,10 @@
 #include "rfs_rule.h"
 #include "rfs_ess.h"
 
+
+static int rfs_start (void);
+static int rfs_stop (void);
+
 /*
  * debug level
  */
@@ -44,16 +48,24 @@ int rfs_dbg_level = DBG_LVL_DEFAULT;
 
 
 /*
+ * feature enable
+ */
+static int rfs_enable = 0;
+
+/*
  * rfs_proc_entry, root proc entry of RFS module
  */
 struct proc_dir_entry *rfs_proc_entry;
-
 
 /*
  * rfs_debug_entry, debug entry in proc file system
  */
 static struct proc_dir_entry *rfs_debug_entry;
 
+/*
+ * rfs_enable_entry, enable entry in proc file system
+ */
+static struct proc_dir_entry *rfs_enable_entry;
 
 /*
  * rfs_debug_proc_show
@@ -106,6 +118,64 @@ static const struct file_operations debug_proc_fops = {
 
 
 /*
+ * rfs_enable_proc_show
+ */
+static int rfs_enable_proc_show(struct seq_file *m, void *v)
+{
+	return seq_printf(m, "%d\n", rfs_enable);
+}
+
+
+/*
+ * rfs_enalbe_proc_write
+ */
+static ssize_t rfs_enable_proc_write(struct file *file, const char __user *buffer,
+			size_t count, loff_t *ppos)
+{
+	unsigned long val;
+	int err = kstrtoul_from_user(buffer, count, 0, &val);
+	if (err)
+		return err;
+
+	if (rfs_enable == val) {
+		return count;
+	}
+
+	if (val) {
+		rfs_start();
+	} else {
+		rfs_stop();
+	}
+
+	rfs_enable = !!val;
+	return count;
+
+}
+
+
+/*
+ * rfs_enalbe_proc_open
+ */
+static int rfs_enable_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rfs_enable_proc_show, NULL);
+}
+
+
+/*
+ * struct file_operations enable_proc_fops
+ */
+static const struct file_operations enable_proc_fops = {
+	.owner = THIS_MODULE,
+	.open  = rfs_enable_proc_open,
+	.read  = seq_read,
+	.llseek = seq_lseek,
+	.write  = rfs_enable_proc_write,
+	.release = single_release,
+};
+
+
+/*
  * rfs_proc_init
  */
 static int rfs_proc_init(void)
@@ -123,7 +193,9 @@ static int rfs_proc_init(void)
 				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				rfs_proc_entry, &debug_proc_fops);
 
-
+	rfs_enable_entry = proc_create("enable",
+				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
+				rfs_proc_entry, &enable_proc_fops);
 	return 0;
 }
 
@@ -133,6 +205,9 @@ static int rfs_proc_init(void)
  */
 static void rfs_proc_exit(void)
 {
+	if (rfs_enable_entry)
+		remove_proc_entry("enable", rfs_proc_entry);
+
 	if (rfs_debug_entry)
 		remove_proc_entry("debug", rfs_proc_entry);
 
@@ -140,6 +215,37 @@ static void rfs_proc_exit(void)
 		remove_proc_entry("qrfs", NULL);
 		rfs_proc_entry = NULL;
 	}
+}
+
+
+/*
+ * rfs_is_enabled
+ */
+int rfs_is_enabled(void)
+{
+	return rfs_enable;
+}
+
+
+/*
+ * rfs_start
+ */
+static int rfs_start (void)
+{
+	rfs_wxt_start();
+	return 0;
+}
+
+
+/*
+ * rfs_stop
+ */
+static int rfs_stop(void)
+{
+	rfs_wxt_stop();
+	rfs_rule_destroy_all();
+	rfs_cm_connection_destroy_all();
+	return 0;
 }
 
 

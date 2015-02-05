@@ -28,12 +28,12 @@
 #include <net/route.h>
 #include <net/sock.h>
 #include <asm/byteorder.h>
-#include <qca-ssdk/fal/fal_rfs.h>
 
 #include "rfs.h"
 #include "rfs_rule.h"
 #include "rfs_nbr.h"
 #include "rfs_cm.h"
+#include "rfs_dev.h"
 
 /*
  * RSS key base address
@@ -62,6 +62,8 @@ struct rfs_ess {
 	struct rfs_vif *lan;
 	spinlock_t vif_lock;
 	struct proc_dir_entry *proc_vif;
+	struct rfs_device *dev;
+	spinlock_t dev_lock;
 };
 
 static struct rfs_ess __ess = {
@@ -154,15 +156,29 @@ uint32_t rfs_ess_get_rxhash(__be32 sip, __be32 dip,
  */
 static int rfs_ess_mac_rule_set(uint32_t vid, uint8_t *mac, uint16_t cpu)
 {
-	ssdk_fdb_rfs_t fdbt;
-	memcpy(fdbt.addr, mac, ETH_ALEN);
-	fdbt.fid = (uint16_t)vid;
-	fdbt.load_balance = (uint8_t)cpu;
-	if (cpu == RPS_NO_CPU) {
-		return ssdk_rfs_mac_rule_del(&fdbt);
-	} else {
-		return ssdk_rfs_mac_rule_set(&fdbt);
+	int ret;
+	int is_set;
+	struct rfs_device *dev;
+	struct rfs_ess *ess = &__ess;
+
+	rcu_read_lock();
+	dev = rcu_dereference(ess->dev);
+
+	if (!dev || !dev->mac_rule_cb) {
+		rcu_read_unlock();
+		return 0;
 	}
+
+	if (cpu == RPS_NO_CPU) {
+		is_set = 0;
+	} else {
+		is_set = 1;
+	}
+
+	ret = dev->mac_rule_cb((uint16_t)vid, mac, (uint8_t)cpu, is_set);
+	rcu_read_unlock();
+
+	return ret;
 }
 
 /*
@@ -170,19 +186,29 @@ static int rfs_ess_mac_rule_set(uint32_t vid, uint8_t *mac, uint16_t cpu)
  */
 static int rfs_ess_ip4_rule_set(uint32_t vid, __be32 ipaddr, uint8_t *mac, uint16_t cpu)
 {
-	ssdk_ip4_rfs_t ip4t;
-	memcpy(ip4t.mac_addr, mac, ETH_ALEN);
-	/*
-	 * network order(big endian) to little endian
-	 */
-	ip4t.ip4_addr = __swab32(ipaddr);
-	ip4t.vid = vid;
-	ip4t.load_balance = (uint8_t)cpu;
-	if (cpu == RPS_NO_CPU) {
-		return ssdk_ip_rfs_ip4_rule_del(&ip4t);
-	} else {
-		return ssdk_ip_rfs_ip4_rule_set(&ip4t);
+	int ret;
+	int is_set;
+	struct rfs_device *dev;
+	struct rfs_ess *ess = &__ess;
+
+	rcu_read_lock();
+	dev = rcu_dereference(ess->dev);
+
+	if (!dev || !dev->ip4_rule_cb) {
+		rcu_read_unlock();
+		return 0;
 	}
+
+	if (cpu == RPS_NO_CPU) {
+		is_set = 0;
+	} else {
+		is_set = 1;
+	}
+
+	ret = dev->ip4_rule_cb((uint16_t)vid, __swab32(ipaddr), mac, (uint8_t)cpu, is_set);
+	rcu_read_unlock();
+
+	return ret;
 }
 
 
@@ -191,16 +217,30 @@ static int rfs_ess_ip4_rule_set(uint32_t vid, __be32 ipaddr, uint8_t *mac, uint1
  */
 static int rfs_ess_ip6_rule_set(uint32_t vid, struct in6_addr *ipaddr, uint8_t *mac, uint16_t cpu)
 {
-	ssdk_ip6_rfs_t ip6t;
-	memcpy(ip6t.mac_addr, mac, ETH_ALEN);
-	memcpy(ip6t.ip6_addr, ipaddr, sizeof(ip6t.ip6_addr));
-	ip6t.vid = vid;
-	ip6t.load_balance = (uint8_t)cpu;
-	if (cpu == RPS_NO_CPU) {
-		return ssdk_ip_rfs_ip6_rule_del(&ip6t);
-	} else {
-		return ssdk_ip_rfs_ip6_rule_set(&ip6t);
+	int ret;
+	int is_set;
+	struct rfs_device *dev;
+	struct rfs_ess *ess = &__ess;
+
+	rcu_read_lock();
+	dev = rcu_dereference(ess->dev);
+
+	if (!dev || !dev->ip6_rule_cb) {
+		rcu_read_unlock();
+		return 0;
 	}
+
+
+	if (cpu == RPS_NO_CPU) {
+		is_set = 0;
+	} else {
+		is_set = 1;
+	}
+
+	ret = dev->ip6_rule_cb((uint16_t)vid, (uint8_t *)ipaddr, mac, (uint8_t)cpu, is_set);
+	rcu_read_unlock();
+
+	return ret;
 }
 
 
@@ -580,6 +620,51 @@ int rfs_ess_update_tuple_rule(uint32_t orig_rxhash, uint32_t reply_rxhash, uint1
 }
 
 
+/*
+ * rfs_ess_device_register
+ */
+int rfs_ess_device_register(struct rfs_device *dev)
+{
+	struct rfs_ess *ess = &__ess;
+	struct rfs_device *odev;
+
+	spin_lock_bh(&ess->dev_lock);
+	odev = rcu_dereference(ess->dev);
+	if (odev) {
+		RFS_WARN("ESS dev[%s] has registered\n", odev->name);
+		spin_unlock_bh(&ess->dev_lock);
+		return -1;
+	}
+
+	rcu_assign_pointer(ess->dev, dev);
+	spin_unlock_bh(&ess->dev_lock);
+	return 0;
+}
+EXPORT_SYMBOL(rfs_ess_device_register);
+
+/*
+ * rfs_ess_device_unregister
+ */
+int rfs_ess_device_unregister(struct rfs_device *dev)
+{
+	struct rfs_ess *ess = &__ess;
+	struct rfs_device *odev;
+
+	spin_lock_bh(&ess->dev_lock);
+	odev = rcu_dereference(ess->dev);
+	if (odev != dev) {
+		RFS_WARN("ESS dev[%s] has not registered\n", dev->name);
+		spin_unlock_bh(&ess->dev_lock);
+		return -1;
+	}
+
+	rcu_assign_pointer(ess->dev, NULL);
+	spin_unlock_bh(&ess->dev_lock);
+
+	return 0;
+}
+EXPORT_SYMBOL(rfs_ess_device_unregister);
+
 
 /*
  * rfs_ess_proc_show
@@ -728,6 +813,7 @@ int rfs_ess_init(void)
 	iounmap(virt_base_addr);
 
 	spin_lock_init(&__ess.vif_lock);
+	spin_lock_init(&__ess.dev_lock);
 	__ess.proc_vif = proc_create("vif", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				    rfs_proc_entry, &ess_vif_proc_fops);
 

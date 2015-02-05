@@ -326,7 +326,7 @@ void rfs_cm_connection_destroy_all(void)
 			if (ce->flag & RFS_CM_FLAG_DNAT ) {
 				hlist_del_rcu(&ce->dnat_hlist);
 			}
-			rfs_cm_connection_rcu_free(&ce->rcu);
+			call_rcu(&ce->rcu, rfs_cm_connection_rcu_free);
 
 		}
 	}
@@ -451,6 +451,10 @@ static int rfs_cm_conntrack_event(unsigned int events, struct nf_ct_event *item)
 	struct nf_conntrack_tuple reply_tuple;
 	struct rfs_cm_ipv4_connection conn;
 	int snat, dnat;
+
+	if (!rfs_is_enabled()) {
+		return NOTIFY_DONE;
+	}
 
 	/*
 	 * If we don't have a conntrack entry then we're done.

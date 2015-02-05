@@ -29,6 +29,7 @@
 
 extern int rfs_dbg_level;
 extern struct proc_dir_entry *rfs_proc_entry;
+int rfs_is_enabled(void);
 
 #define __DBG_FUN(xyz, fmt, ...) \
 	do { \

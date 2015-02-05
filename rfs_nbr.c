@@ -48,6 +48,9 @@ static int nbr_netevent_callback(struct notifier_block *notifier, unsigned long 
 	int family;
 	int key_len;
 
+	if (!rfs_is_enabled())
+		return NOTIFY_DONE;
+
 	if (event != NETEVENT_NEIGH_UPDATE)
 		return NOTIFY_DONE;
 

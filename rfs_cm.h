@@ -42,7 +42,7 @@ struct rfs_cm_ipv4_connection {
 
 #define RFS_CM_FLAG_SNAT 0x0001
 #define RFS_CM_FLAG_DNAT 0x0002
-
+void rfs_cm_connection_destroy_all(void);
 int rfs_cm_update_rules(__be32 ipaddr, uint16_t cpu);
 int rfs_cm_init(void);
 void rfs_cm_exit(void);
