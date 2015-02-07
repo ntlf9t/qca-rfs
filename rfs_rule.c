@@ -572,11 +572,6 @@ static ssize_t rfs_rule_proc_write(struct file *file, const char __user *buffer,
 	int cpu;
 	int vid = 0;
 
-	if (!rfs_is_enabled())
-	{
-		return -EFAULT;
-	}
-
 	count = min(count, sizeof(buf) - 1);
 	if (copy_from_user(buf, buffer, count))
 		return -EFAULT;

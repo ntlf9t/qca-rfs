@@ -219,19 +219,13 @@ static void rfs_proc_exit(void)
 
 
 /*
- * rfs_is_enabled
- */
-int rfs_is_enabled(void)
-{
-	return rfs_enable;
-}
-
-
-/*
  * rfs_start
  */
 static int rfs_start (void)
 {
+	rfs_ess_start();
+	rfs_cm_start();
+	rfs_nbr_start();
 	rfs_wxt_start();
 	return 0;
 }
@@ -243,8 +237,10 @@ static int rfs_start (void)
 static int rfs_stop(void)
 {
 	rfs_wxt_stop();
+	rfs_nbr_stop();
+	rfs_cm_stop();
+	rfs_ess_stop();
 	rfs_rule_destroy_all();
-	rfs_cm_connection_destroy_all();
 	return 0;
 }
 
@@ -332,6 +328,8 @@ static void __exit rfs_exit(void)
 	rfs_ess_exit();
 
 	rfs_proc_exit();
+
+	rcu_barrier();
 }
 
 
