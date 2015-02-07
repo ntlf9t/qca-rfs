@@ -21,10 +21,16 @@
 #ifndef __RFS_ESS_H
 #define __RFS_ESS_H
 struct rfs_rule_entry;
+
+int rfs_ess_add_brif(uint32_t ifindex);
+int rfs_ess_del_brif(uint32_t ifindex);
 int rfs_ess_update_mac_rule(struct rfs_rule_entry *re, uint16_t cpu);
 int rfs_ess_update_ip_rule(struct rfs_rule_entry *re, uint16_t cpu);
 int rfs_ess_update_tuple_rule(uint32_t orig_rxhash, uint32_t reply_rxhash, uint16_t cpu);
 uint32_t rfs_ess_get_rxhash(__be32 sip, __be32 dip, __be16 sport, __be16 dport);
+
+int rfs_ess_start(void);
+int rfs_ess_stop(void);
 
 int rfs_ess_init(void);
 void rfs_ess_exit(void);

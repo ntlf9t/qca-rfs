@@ -20,6 +20,9 @@
 #ifndef __RFS_NBR_H
 #define __RFS_NBR_H
 
+int rfs_nbr_start(void);
+int rfs_nbr_stop(void);
+
 int rfs_nbr_init(void);
 void rfs_nbr_exit(void);
 

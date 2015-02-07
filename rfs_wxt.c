@@ -34,6 +34,7 @@
 #include <net/iw_handler.h>
 #include "rfs.h"
 #include "rfs_rule.h"
+#include "rfs_ess.h"
 
 /*
  * Per-module structure.
@@ -255,6 +256,7 @@ static int rfs_wxt_newlink(struct ifinfomsg *ifi, unsigned char *buf, size_t len
 static int rfs_wxt_handler(unsigned char *buf, int len)
 {
 	struct nlmsghdr *nlh;
+	struct ifinfomsg *ifi;
 	int left;
 
 	nlh = (struct nlmsghdr *) buf;
@@ -268,9 +270,17 @@ static int rfs_wxt_handler(unsigned char *buf, int len)
 				RFS_DEBUG("invalid netlink message");
 				break;
 			}
-			rfs_wxt_newlink(NLMSG_DATA(nlh),
-				(u8 *) NLMSG_DATA(nlh) + NLMSG_ALIGN(sizeof(struct ifinfomsg)),
-				NLMSG_PAYLOAD(nlh, sizeof(struct ifinfomsg)));
+
+			ifi = NLMSG_DATA(nlh);
+			if (ifi->ifi_family == AF_BRIDGE) {
+				if (nlh->nlmsg_type == RTM_NEWLINK)
+					rfs_ess_add_brif(ifi->ifi_index);
+				else
+					rfs_ess_del_brif(ifi->ifi_index);
+			} else {
+				rfs_wxt_newlink(ifi, (u8 *)ifi + NLMSG_ALIGN(sizeof(struct ifinfomsg)),
+					NLMSG_PAYLOAD(nlh, sizeof(struct ifinfomsg)));
+			}
 			break;
 
 		}

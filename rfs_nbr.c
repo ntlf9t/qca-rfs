@@ -39,6 +39,16 @@
 
 
 /*
+ * Per-module structure.
+ */
+struct rfs_nbr {
+	int is_running;
+};
+
+
+static struct rfs_nbr __nbr;
+
+/*
  * nbr_netevent_callback
  */
 static int nbr_netevent_callback(struct notifier_block *notifier, unsigned long event, void *ctx)
@@ -47,9 +57,6 @@ static int nbr_netevent_callback(struct notifier_block *notifier, unsigned long 
 	struct neighbour *neigh;
 	int family;
 	int key_len;
-
-	if (!rfs_is_enabled())
-		return NOTIFY_DONE;
 
 	if (event != NETEVENT_NEIGH_UPDATE)
 		return NOTIFY_DONE;
@@ -77,14 +84,49 @@ static struct notifier_block nbr_notifier = {
 };
 
 
+/*
+ * rfs_nbr_start
+ */
+int rfs_nbr_start(void)
+{
+	struct rfs_nbr *nbr = &__nbr;
+
+	if (nbr->is_running)
+		return 0;
+
+	RFS_DEBUG("RFS nbr start\n");
+	register_netevent_notifier(&nbr_notifier);
+	nbr->is_running = 1;
+	return 0;
+}
+
+
+/*
+ * rfs_nbr_stop
+ */
+int rfs_nbr_stop(void)
+{
+	struct rfs_nbr *nbr = &__nbr;
+
+	if (!nbr->is_running)
+		return 0;
+
+	RFS_DEBUG("RFS nbr stop\n");
+	unregister_netevent_notifier(&nbr_notifier);
+	nbr->is_running = 0;
+	return 0;
+}
+
 
 /*
  * rfs_nbr_init
  */
 int rfs_nbr_init(void)
 {
+	struct rfs_nbr *nbr = &__nbr;
+
 	RFS_DEBUG("RFS nbr init\n");
-	register_netevent_notifier(&nbr_notifier);
+	nbr->is_running = 0;
 	return 0;
 }
 
@@ -95,6 +137,6 @@ int rfs_nbr_init(void)
 void rfs_nbr_exit(void)
 {
 	RFS_DEBUG("RFS nbr exit\n");
-	unregister_netevent_notifier(&nbr_notifier);
+	rfs_nbr_stop();
 }
 

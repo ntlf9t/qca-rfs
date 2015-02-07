@@ -24,7 +24,8 @@
 #include <linux/jhash.h>
 #include <linux/inetdevice.h>
 #include <linux/of.h>
-#include <linux/bitops.h>
+#include <linux/if_vlan.h>
+#include <linux/if_arp.h>
 #include <net/route.h>
 #include <net/sock.h>
 #include <asm/byteorder.h>
@@ -49,7 +50,10 @@
 struct rfs_vif {
 	char ifname[IFNAMSIZ];
 	uint8_t mac[ETH_ALEN];
-	uint32_t vid;
+	uint16_t vid;
+	int32_t  ifindex;
+	int32_t  l3if;
+	int32_t  brindex;
 	struct rfs_vif *next;
 };
 
@@ -58,12 +62,14 @@ struct rfs_vif {
  */
 struct rfs_ess {
 	uint32_t hashkey[10];
-	struct rfs_vif *wan;
-	struct rfs_vif *lan;
+	struct rfs_vif *vifs;
 	spinlock_t vif_lock;
 	struct proc_dir_entry *proc_vif;
 	struct rfs_device *dev;
 	spinlock_t dev_lock;
+        struct notifier_block dev_notifier;
+        struct notifier_block inet_notifier;
+	int    is_running;
 };
 
 static struct rfs_ess __ess = {
@@ -154,7 +160,7 @@ uint32_t rfs_ess_get_rxhash(__be32 sip, __be32 dip,
 /*
  * rfs_ess_mac_rule_set
  */
-static int rfs_ess_mac_rule_set(uint32_t vid, uint8_t *mac, uint16_t cpu)
+static int rfs_ess_mac_rule_set(uint16_t vid, uint8_t *mac, uint16_t cpu)
 {
 	int ret;
 	int is_set;
@@ -175,7 +181,7 @@ static int rfs_ess_mac_rule_set(uint32_t vid, uint8_t *mac, uint16_t cpu)
 		is_set = 1;
 	}
 
-	ret = dev->mac_rule_cb((uint16_t)vid, mac, (uint8_t)cpu, is_set);
+	ret = dev->mac_rule_cb(vid, mac, (uint8_t)cpu, is_set);
 	rcu_read_unlock();
 
 	return ret;
@@ -184,7 +190,7 @@ static int rfs_ess_mac_rule_set(uint32_t vid, uint8_t *mac, uint16_t cpu)
 /*
  * rfs_ess_ip4_rule_set
  */
-static int rfs_ess_ip4_rule_set(uint32_t vid, __be32 ipaddr, uint8_t *mac, uint16_t cpu)
+static int rfs_ess_ip4_rule_set(uint16_t vid, __be32 ipaddr, uint8_t *mac, uint16_t cpu)
 {
 	int ret;
 	int is_set;
@@ -205,7 +211,7 @@ static int rfs_ess_ip4_rule_set(uint32_t vid, __be32 ipaddr, uint8_t *mac, uint1
 		is_set = 1;
 	}
 
-	ret = dev->ip4_rule_cb((uint16_t)vid, __swab32(ipaddr), mac, (uint8_t)cpu, is_set);
+	ret = dev->ip4_rule_cb(vid, __swab32(ipaddr), mac, (uint8_t)cpu, is_set);
 	rcu_read_unlock();
 
 	return ret;
@@ -215,7 +221,7 @@ static int rfs_ess_ip4_rule_set(uint32_t vid, __be32 ipaddr, uint8_t *mac, uint1
 /*
  * rfs_ess_ip6_rule_set
  */
-static int rfs_ess_ip6_rule_set(uint32_t vid, struct in6_addr *ipaddr, uint8_t *mac, uint16_t cpu)
+static int rfs_ess_ip6_rule_set(uint16_t vid, struct in6_addr *ipaddr, uint8_t *mac, uint16_t cpu)
 {
 	int ret;
 	int is_set;
@@ -237,7 +243,7 @@ static int rfs_ess_ip6_rule_set(uint32_t vid, struct in6_addr *ipaddr, uint8_t *
 		is_set = 1;
 	}
 
-	ret = dev->ip6_rule_cb((uint16_t)vid, (uint8_t *)ipaddr, mac, (uint8_t)cpu, is_set);
+	ret = dev->ip6_rule_cb(vid, (uint8_t *)ipaddr, mac, (uint8_t)cpu, is_set);
 	rcu_read_unlock();
 
 	return ret;
@@ -245,63 +251,312 @@ static int rfs_ess_ip6_rule_set(uint32_t vid, struct in6_addr *ipaddr, uint8_t *
 
 
 /*
+ *
+ */
+static int rfs_ess_is_l3_dev(struct net_device *dev)
+{
+	struct in_device *in_dev;
+	struct in_ifaddr *ifa = NULL;
+	struct in_ifaddr **ifap = NULL;
+	uint32_t ipaddr = 0;
+
+	in_dev = in_dev_get(dev);
+	if (!in_dev)
+		return 0;
+
+	for (ifap = &in_dev->ifa_list; (ifa = *ifap) != NULL;
+		ifap = &ifa->ifa_next) {
+		if (strcmp(dev->name, ifa->ifa_label))
+			continue;
+
+		ipaddr = ifa->ifa_local;
+	}
+
+	in_dev_put(in_dev);
+
+	return (!!ipaddr);
+}
+
+
+/*
+ * rfs_ess_is_ess_phydev
+ */
+static int rfs_ess_is_ess_phydev(struct net_device *dev)
+{
+	/*
+	 * Any non-ARP device(PPP, L2TP, etc.)
+	 */
+	if (dev->type != ARPHRD_ETHER)
+		return 0;
+
+	/*
+	 * VLAN over VLAN
+	 */
+	if (is_vlan_dev(dev))
+		return 0;
+
+	/*
+	 * Is it a wireless device?
+	 */
+#ifdef CONFIG_WIRELESS_EXT
+	if (dev->wireless_handlers)
+		return 0;
+	else
+#endif
+		if (dev->ieee80211_ptr)
+			return 0;
+
+	/*
+	 * Bridge device
+	 */
+	if (dev->priv_flags & IFF_EBRIDGE)
+		return 0;
+
+	/*
+	 * Multi queue
+	 */
+	if (dev->real_num_rx_queues <= 1)
+		return 0;
+
+	return 1;
+}
+
+
+/*
  * rfs_ess_create_vif
  */
-static int rfs_ess_create_vif(int iswan, char *ifname)
+static int rfs_ess_create_vif(struct net_device *dev)
 {
 	struct rfs_ess *ess = &__ess;
 	struct rfs_vif *vif;
-	struct rfs_vif **hvif;
-	char *pos;
-	uint32_t vid;
-	uint8_t mac[ETH_ALEN];
-	struct net_device *dev;
+	uint16_t vid;
+	uint32_t is_l3if;
+	uint32_t  brindex;
+	struct vlan_dev_priv *vlan;
+	struct net_device *real_dev;
 
-	dev = dev_get_by_name(&init_net, ifname);
-	if (!dev || !dev->dev_addr) {
-		RFS_WARN("Invalid ifname %s\n", ifname);
+	if (!is_vlan_dev(dev))
+		return 0;
+
+	if (!dev->dev_addr) {
+		RFS_DEBUG("Invalid ifname %s\n", dev->name);
 		return -1;
 	}
 
-	memcpy(mac, dev->dev_addr, ETH_ALEN);
-	dev_put(dev);
+	vlan = vlan_dev_priv(dev);
+	real_dev = vlan->real_dev;
+	vid =  vlan->vlan_id;
 
-	pos = strstr(ifname, ".");
-	if (pos) {
-		vid = simple_strtoul(pos+1, NULL, 10);
-	} else {
-		vid = 0;
+	/*
+	 * make sure the real device is an ess device
+	 */
+	if (!rfs_ess_is_ess_phydev(real_dev)) {
+		RFS_DEBUG("The phy device %s is not ess device\n", real_dev->name);
+		return 0;
 	}
 
-	if (iswan)
-		hvif = &ess->wan;
-	else
-		hvif = &ess->lan;
+	is_l3if = rfs_ess_is_l3_dev(dev);
+
+	brindex = 0;
+	if (dev->priv_flags | IFF_BRIDGE_PORT) {
+		struct net_device *brdev;
+		rcu_read_lock();
+		brdev = netdev_master_upper_dev_get_rcu(dev);
+		if (brdev)
+			brindex = brdev->ifindex;
+		rcu_read_unlock();
+	}
+
+	RFS_DEBUG("vlan dev registered %s vid %d parent %s\n", dev->name, vid, real_dev->name);
 
 	spin_lock_bh(&ess->vif_lock);
-	vif = *hvif;
+	vif = ess->vifs;
 	while (vif) {
-		if (strcmp(ifname, vif->ifname) == 0)
+		if (vif->ifindex == dev->ifindex)
 			break;
 		vif = vif->next;
 	}
 
 	if (!vif) {
 		vif = kzalloc(sizeof(struct rfs_vif), GFP_ATOMIC);
-		vif->next = *hvif;
-		*hvif = vif;
+		vif->next = ess->vifs;
+		ess->vifs = vif;
 	}
 
 	if (!vif) {
 		spin_unlock_bh(&ess->vif_lock);
-		return -EFAULT;
+		return -1;
 	}
 
-	memcpy(vif->ifname, ifname, IFNAMSIZ);
-	memcpy(vif->mac, mac, ETH_ALEN);
+	memcpy(vif->ifname, dev->name, IFNAMSIZ);
+	memcpy(vif->mac, dev->dev_addr, ETH_ALEN);
 	vif->vid = vid;
+	vif->l3if = is_l3if;
+	vif->ifindex = dev->ifindex;
+	vif->brindex = brindex;
 	spin_unlock_bh(&ess->vif_lock);
 
+	rfs_rule_reset_all();
+	return 0;
+}
+
+
+/*
+ * rfs_ess_destory_vif
+ */
+static int rfs_ess_destory_vif(struct net_device *dev)
+{
+	struct rfs_ess *ess = &__ess;
+	struct rfs_vif *vif;
+	struct rfs_vif *prev;
+
+	spin_lock_bh(&ess->vif_lock);
+	vif = ess->vifs;
+	prev = NULL;
+	while (vif) {
+		if (dev->ifindex == vif->ifindex)
+			break;
+
+		prev = vif;
+		vif = vif->next;
+	}
+
+	if (!vif) {
+		spin_unlock_bh(&ess->vif_lock);
+		return 0;
+	}
+
+	if (prev)
+		prev->next = vif->next;
+	else
+		ess->vifs = vif->next;
+
+	kfree(vif);
+	spin_unlock_bh(&ess->vif_lock);
+
+	rfs_rule_reset_all();
+	return 0;
+}
+
+
+/*
+ * rfs_ess_update_vif
+ */
+static int rfs_ess_update_l3if(struct net_device *dev)
+{
+	struct rfs_ess *ess = &__ess;
+	struct rfs_vif *vif;
+	int    old_l3if;
+
+	spin_lock_bh(&ess->vif_lock);
+	vif = ess->vifs;
+	while (vif) {
+		if (dev->ifindex == vif->ifindex)
+			break;
+
+		vif = vif->next;
+	}
+
+	if (!vif) {
+		spin_unlock_bh(&ess->vif_lock);
+		return 0;
+	}
+
+	old_l3if = vif->l3if;
+	vif->l3if = rfs_ess_is_l3_dev(dev);
+	spin_unlock_bh(&ess->vif_lock);
+
+	if (old_l3if != vif->l3if)
+		rfs_rule_reset_all();
+	return 0;
+}
+
+
+int rfs_ess_add_brif(uint32_t ifindex)
+{
+	struct net_device *dev;
+	struct net_device *brdev;
+	struct rfs_ess *ess = &__ess;
+	struct rfs_vif *vif;
+	uint32_t brindex = 0;
+	uint32_t old_brindex;
+
+	dev = dev_get_by_index(&init_net, ifindex);
+	if (!dev)
+		return -1;
+
+	if (!(dev->priv_flags | IFF_BRIDGE_PORT)) {
+		dev_put(dev);
+		return -1;
+	}
+
+	rcu_read_lock();
+	brdev = netdev_master_upper_dev_get_rcu(dev);
+	if (brdev)
+		brindex = brdev->ifindex;
+	rcu_read_unlock();
+	dev_put(dev);
+
+	if (!brindex) {
+		return -1;
+	}
+
+	spin_lock_bh(&ess->vif_lock);
+	vif = ess->vifs;
+	while (vif) {
+		if (ifindex == vif->ifindex)
+			break;
+
+		vif = vif->next;
+	}
+
+	if (!vif) {
+		spin_unlock_bh(&ess->vif_lock);
+		return 0;
+	}
+
+	old_brindex = vif->brindex;
+	if (vif->brindex != ifindex) {
+		RFS_DEBUG("Add bridge if %s\n", vif->ifname);
+		vif->brindex = ifindex;
+	}
+	spin_unlock_bh(&ess->vif_lock);
+
+	if(old_brindex != vif->brindex)
+		rfs_rule_reset_all();
+	return 0;
+}
+
+
+int rfs_ess_del_brif(uint32_t ifindex)
+{
+	struct rfs_ess *ess = &__ess;
+	struct rfs_vif *vif;
+	uint32_t old_brindex;
+
+	spin_lock_bh(&ess->vif_lock);
+	vif = ess->vifs;
+	while (vif) {
+		if (ifindex == vif->ifindex)
+			break;
+
+		vif = vif->next;
+	}
+
+	if (!vif) {
+		spin_unlock_bh(&ess->vif_lock);
+		return 0;
+	}
+
+	old_brindex = vif->brindex;
+	if (vif->brindex != 0) {
+		RFS_DEBUG("Del bridge if %s\n", vif->ifname);
+		vif->brindex = 0;
+	}
+	spin_unlock_bh(&ess->vif_lock);
+
+	if(old_brindex != vif->brindex)
+		rfs_rule_reset_all();
 	return 0;
 }
 
@@ -315,16 +570,8 @@ static int rfs_ess_destroy_vifs(void)
 	struct rfs_vif *vif, *next;
 
 	spin_lock_bh(&ess->vif_lock);
-	vif = ess->wan;
-	ess->wan = NULL;
-	while (vif) {
-		next = vif->next;
-		kfree(vif);
-		vif = next;
-	}
-
-	vif = ess->lan;
-	ess->lan = NULL;
+	vif = ess->vifs;
+	ess->vifs = NULL;
 	while (vif) {
 		next = vif->next;
 		kfree(vif);
@@ -337,19 +584,24 @@ static int rfs_ess_destroy_vifs(void)
 
 
 /*
- * rfs_ess_get_vid_wan
+ * rfs_ess_get_ifvid_routing
  */
-static int rfs_ess_get_ifvid_wan(uint32_t *ifvid, uint8_t *ifmac, uint32_t *ifnum)
+static int rfs_ess_get_ifvid_routing(uint32_t *ifvid, uint8_t *ifmac, uint32_t *ifnum)
 {
 	struct rfs_vif *vif;
 	struct rfs_ess *ess = &__ess;
 	int array_size = *ifnum;
 
 	*ifnum = 0;
-	vif = ess->wan;
+	vif = ess->vifs;
 
 	spin_lock_bh(&ess->vif_lock);
 	while (vif) {
+		if(!vif->l3if) {
+			vif = vif->next;
+			continue;
+		}
+
 		if (*ifnum + 1 > array_size) {
 			break;
 		}
@@ -366,19 +618,27 @@ static int rfs_ess_get_ifvid_wan(uint32_t *ifvid, uint8_t *ifmac, uint32_t *ifnu
 
 
 /*
- * rfs_ess_get_vid_lan
+ * rfs_ess_get_ifvid_bridging
  */
-static int rfs_ess_get_ifvid_lan(uint32_t hvid, uint32_t *ifvid, uint32_t *ifnum)
+static int rfs_ess_get_ifvid_bridging(uint32_t hvid, uint32_t *ifvid, uint32_t *ifnum)
 {
 	struct rfs_vif *vif;
 	struct rfs_ess *ess = &__ess;
 	int array_size = *ifnum;
 
 	*ifnum = 0;
-	vif = ess->lan;
+	vif = ess->vifs;
 
 	spin_lock_bh(&ess->vif_lock);
 	while (vif) {
+		if (!vif->brindex) {
+			vif = vif->next;
+			continue;
+		}
+
+		/*
+		 * The interface is actually where the host comes.
+		 */
 		if (hvid == vif->vid) {
 			vif = vif->next;
 			continue;
@@ -414,10 +674,10 @@ int rfs_ess_update_mac_rule(struct rfs_rule_entry *re, uint16_t cpu)
 
 
 	/*
-	 * Get VLAN ID of LAN
+	 * Get VLAN ID of bridging interface
 	 */
 	nvif = MAX_VLAN_PORT;
-	rfs_ess_get_ifvid_lan(re->hvid, ifvid, &nvif);
+	rfs_ess_get_ifvid_bridging(re->hvid, ifvid, &nvif);
 
 
 	/*
@@ -484,10 +744,10 @@ int rfs_ess_update_ip_rule(struct rfs_rule_entry *re, uint16_t cpu)
 	int ret;
 
 	/*
-	 * Get VLAN ID of WAN
+	 * Get VLAN ID of routing interface
 	 */
 	nvif = MAX_VLAN_PORT;
-	rfs_ess_get_ifvid_wan(ifvid, ifmac, &nvif);
+	rfs_ess_get_ifvid_routing(ifvid, ifmac, &nvif);
 
 
 	/*
@@ -678,60 +938,16 @@ static int rfs_ess_vif_proc_show(struct seq_file *m, void *v)
 
 	spin_lock_bh(&ess->vif_lock);
 
-	vif = ess->wan;
+	vif = ess->vifs;
 	while (vif) {
-		seq_printf(m, "WAN %16s %4d    %pM\n", vif->ifname, vif->vid, vif->mac);
-		vif = vif->next;
-	}
-
-
-	vif = ess->lan;
-	while (vif) {
-		seq_printf(m, "LAN %16s %4d    %pM\n", vif->ifname, vif->vid, vif->mac);
+		seq_printf(m, "%-8s %4d %pM %s bif %d\n", vif->ifname, vif->vid, vif->mac,
+			vif->l3if?"l3":"l2", vif->brindex);
 		vif = vif->next;
 	}
 
 	seq_putc(m, '\n');
 	spin_unlock_bh(&ess->vif_lock);
 	return 0;
-}
-
-
-/*
- * rfs_ess_proc_write
- *	get ESS vlan configuration
- */
-static ssize_t rfs_ess_vif_proc_write(struct file *file, const char __user *buffer,
-			size_t count, loff_t *ppos)
-{
-	char buf[64];
-	char ifname[IFNAMSIZ];
-	char cmd[8];
-	int nvar;
-
-	count = min(count, sizeof(buf) - 1);
-	if (copy_from_user(buf, buffer, count))
-		return -EFAULT;
-	buf[count] = '\0';
-
-	memset(ifname, 0, sizeof(ifname));
-	memset(cmd, 0, sizeof(cmd));
-	nvar = sscanf(buf, "%8s %16s", cmd, ifname);
-
-	if (!strcmp(cmd, "wan") && nvar == 2) {
-		rfs_ess_create_vif(1, ifname);
-	} else if (!strcmp(cmd, "lan") && nvar == 2) {
-		rfs_ess_create_vif(0, ifname);
-	} else if (!strcmp(cmd, "reset") && nvar == 1) {
-		rfs_ess_destroy_vifs();
-	} else {
-		RFS_WARN("Unknown configuration\n");
-		return count;
-	}
-
-	rfs_rule_reset_all();
-	return count;
-
 }
 
 
@@ -752,9 +968,85 @@ static const struct file_operations ess_vif_proc_fops = {
 	.open  = rfs_ess_vif_proc_open,
 	.read  = seq_read,
 	.llseek = seq_lseek,
-	.write  = rfs_ess_vif_proc_write,
 	.release = single_release,
 };
+
+
+
+static int rfs_ess_device_event(struct notifier_block *this, unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+
+	if (!dev)
+		return NOTIFY_DONE;
+
+	switch (event) {
+	case NETDEV_DOWN:
+		rfs_ess_destory_vif(dev);
+		break;
+	case NETDEV_UP:
+		rfs_ess_create_vif(dev);
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+
+static int rfs_ess_inet_event(struct notifier_block *this, unsigned long event, void *ptr)
+{
+	struct net_device *dev = ((struct in_ifaddr *)ptr)->ifa_dev->dev;
+
+	switch (event) {
+	case NETDEV_DOWN:
+	case NETDEV_UP:
+		if (dev) {
+			rfs_ess_update_l3if(dev);
+		}
+		break;
+	}
+
+	return NOTIFY_DONE;
+}
+
+
+/*
+ * rfs_ess_start
+ */
+int rfs_ess_start(void)
+{
+	struct rfs_ess *ess = &__ess;
+
+	if (ess->is_running)
+		return 0;
+
+	RFS_DEBUG("RFS ess start\n");
+	register_netdevice_notifier(&ess->dev_notifier);
+	register_inetaddr_notifier(&ess->inet_notifier);
+	ess->is_running = 1;
+
+	return 0;
+}
+
+
+/*
+ * rfs_ess_stop
+ */
+int rfs_ess_stop(void)
+{
+	struct rfs_ess *ess = &__ess;
+
+	if (!ess->is_running)
+		return 0;
+
+	RFS_DEBUG("RFS ess stop\n");
+	unregister_inetaddr_notifier(&ess->inet_notifier);
+	unregister_netdevice_notifier(&ess->dev_notifier);
+	rfs_ess_destroy_vifs();
+	ess->is_running = 0;
+
+	return 0;
+}
 
 
 /*
@@ -768,6 +1060,7 @@ int rfs_ess_init(void)
 	uint32_t reg_size;
 	uint8_t __iomem *virt_base_addr;
 	uint32_t len = 0;
+	struct rfs_ess *ess = &__ess;
 	int i;
 
 	RFS_DEBUG("RFS ess init\n");
@@ -817,6 +1110,15 @@ int rfs_ess_init(void)
 	__ess.proc_vif = proc_create("vif", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				    rfs_proc_entry, &ess_vif_proc_fops);
 
+
+	ess->dev_notifier.notifier_call = rfs_ess_device_event;
+	ess->dev_notifier.priority = 1;
+
+	ess->inet_notifier.notifier_call = rfs_ess_inet_event;
+	ess->inet_notifier.priority = 1;
+
+	ess->is_running = 0;
+
 	return 0;
 }
 
@@ -825,9 +1127,13 @@ int rfs_ess_init(void)
  */
 void rfs_ess_exit(void)
 {
+	struct rfs_ess *ess = &__ess;
+
 	RFS_DEBUG("RFS ess exit\n");
-	if (__ess.proc_vif);
+	if (ess->proc_vif);
 		remove_proc_entry("vif", rfs_proc_entry);
+
+	rfs_ess_stop();
 }
 
 

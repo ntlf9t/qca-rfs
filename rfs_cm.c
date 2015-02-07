@@ -67,7 +67,7 @@ struct rfs_cm {
 	 * proc entry for connection debugging
 	 */
 	struct proc_dir_entry *proc_cm;
-
+	int is_running;
 };
 
 static struct rfs_cm __cm;
@@ -452,10 +452,6 @@ static int rfs_cm_conntrack_event(unsigned int events, struct nf_ct_event *item)
 	struct rfs_cm_ipv4_connection conn;
 	int snat, dnat;
 
-	if (!rfs_is_enabled()) {
-		return NOTIFY_DONE;
-	}
-
 	/*
 	 * If we don't have a conntrack entry then we're done.
 	 */
@@ -707,37 +703,73 @@ static struct nf_hook_ops rfs_cm_nf_hooks[] __read_mostly = {
 };
 #endif
 
+/*
+ * rfs_cm_start
+ */
+int rfs_cm_start(void)
+{
+	int ret = -1;
+	struct rfs_cm *cm = &__cm;
+
+	if (cm->is_running)
+		return 0;
+
+	RFS_DEBUG("RFS cm start\n");
+#ifdef CONFIG_NF_CONNTRACK_EVENTS
+	ret = nf_conntrack_register_notifier(&init_net, &rfs_cm_conntrack_notifier);
+	if (ret < 0) {
+		RFS_ERROR("can't register nf notifier hook: %d\n", ret);
+		return -1;
+	}
+#endif
+
+#ifdef DEBUG_ESS_SKB_RXHASH
+	nf_register_hooks(rfs_cm_nf_hooks, ARRAY_SIZE(rfs_cm_nf_hooks));
+#endif
+	cm->is_running = 1;
+	return 0;
+}
+
+
+/*
+ * rfs_cm_stop
+ */
+int rfs_cm_stop(void)
+{
+	struct rfs_cm *cm = &__cm;
+
+	if (!cm->is_running)
+		return 0;
+
+	RFS_DEBUG("RFS cm stop\n");
+#ifdef DEBUG_ESS_SKB_RXHASH
+	nf_unregister_hooks(rfs_cm_nf_hooks, ARRAY_SIZE(rfs_cm_nf_hooks));
+#endif
+
+#ifdef CONFIG_NF_CONNTRACK_EVENTS
+	nf_conntrack_unregister_notifier(&init_net, &rfs_cm_conntrack_notifier);
+#endif
+
+	rfs_cm_connection_destroy_all();
+	cm->is_running = 0;
+	return 0;
+}
+
 
 /*
  * rfs_cm_init()
  */
 int rfs_cm_init(void)
 {
-	int result = -1;
 	struct rfs_cm *cm = &__cm;
 
 	RFS_DEBUG("RFS cm init\n");
 	spin_lock_init(&cm->hash_lock);
-#ifdef CONFIG_NF_CONNTRACK_EVENTS
-	/*
-	 * Register a hook to get nf notifications.
-	 */
-	result = nf_conntrack_register_notifier(&init_net, &rfs_cm_conntrack_notifier);
-	if (result < 0) {
-		RFS_ERROR("can't register nf notifier hook: %d\n", result);
-		goto exit1;
-	}
-#endif
 	cm->proc_cm = proc_create("connection", S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH,
 				    rfs_proc_entry, &cm_proc_fops);
 
-#ifdef DEBUG_ESS_SKB_RXHASH
-	nf_register_hooks(rfs_cm_nf_hooks, ARRAY_SIZE(rfs_cm_nf_hooks));
-#endif
-	result = 0;
-
-exit1:
-	return result;
+	cm->is_running = 0;
+	return 0;
 }
 
 /*
@@ -749,18 +781,10 @@ void rfs_cm_exit(void)
 	struct rfs_cm *cm = &__cm;
 	RFS_DEBUG("RFS cm exit\n");
 
-#ifdef DEBUG_ESS_SKB_RXHASH
-	nf_unregister_hooks(rfs_cm_nf_hooks, ARRAY_SIZE(rfs_cm_nf_hooks));
-#endif
-
 	if (cm->proc_cm)
 		remove_proc_entry("connection", rfs_proc_entry);
 
-#ifdef CONFIG_NF_CONNTRACK_EVENTS
-	nf_conntrack_unregister_notifier(&init_net, &rfs_cm_conntrack_notifier);
-#endif
-
-	rfs_cm_connection_destroy_all();
+	rfs_cm_stop();
 }
 
 
