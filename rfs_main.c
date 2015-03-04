@@ -306,7 +306,7 @@ exit2:
 exit1:
 	rfs_proc_exit();
 
-	return -1;
+	return 0;
 }
 
 
