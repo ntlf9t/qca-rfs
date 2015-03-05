@@ -162,7 +162,7 @@ static int rfs_wxt_get_cpu(int ifindex)
 	 * get physic interface wifix
 	 */
 	pifi = rfs_wxt_get_parent(ifindex);
-	RFS_INFO("vif %d, parent %d\n", ifindex, pifi);
+	RFS_DEBUG("vif %d, parent %d\n", ifindex, pifi);
 	if (pifi < 0)
 		return RPS_NO_CPU;
 
@@ -170,7 +170,7 @@ static int rfs_wxt_get_cpu(int ifindex)
 	 * get irq of physic interface
 	 */
 	irq = rfs_wxt_get_irq(pifi);
-	RFS_INFO("irq %d\n", irq);
+	RFS_DEBUG("irq %d\n", irq);
 	if (pifi < 0)
 		return RPS_NO_CPU;
 
@@ -178,7 +178,7 @@ static int rfs_wxt_get_cpu(int ifindex)
 	 * get irq affinity
 	 */
 	cpu = rfs_wxt_get_cpu_by_irq(irq);
-	RFS_INFO("cpu %d\n", cpu);
+	RFS_DEBUG("cpu %d\n", cpu);
 	if (cpu < 0)
 		return RPS_NO_CPU;
 
