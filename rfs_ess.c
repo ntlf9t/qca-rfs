@@ -29,6 +29,7 @@
 #include <net/route.h>
 #include <net/sock.h>
 #include <asm/byteorder.h>
+#include <linux/device.h>
 
 #include "rfs.h"
 #include "rfs_rule.h"
@@ -251,7 +252,7 @@ static int rfs_ess_ip6_rule_set(uint16_t vid, struct in6_addr *ipaddr, uint8_t *
 
 
 /*
- *
+ * rfs_ess_is_l3_dev
  */
 static int rfs_ess_is_l3_dev(struct net_device *dev)
 {
@@ -283,44 +284,46 @@ static int rfs_ess_is_l3_dev(struct net_device *dev)
  */
 static int rfs_ess_is_ess_phydev(struct net_device *dev)
 {
-	/*
-	 * Any non-ARP device(PPP, L2TP, etc.)
-	 */
-	if (dev->type != ARPHRD_ETHER)
+	struct device *pdev;
+
+	pdev = dev->dev.parent;
+	if (!pdev)
 		return 0;
 
 	/*
-	 * VLAN over VLAN
+	 * parent device is a edma device
 	 */
-	if (is_vlan_dev(dev))
+	if (!strstr(dev_name(pdev), "edma"))
 		return 0;
 
-	/*
-	 * Is it a wireless device?
-	 */
-#ifdef CONFIG_WIRELESS_EXT
-	if (dev->wireless_handlers)
-		return 0;
-	else
-#endif
-		if (dev->ieee80211_ptr)
-			return 0;
-
-	/*
-	 * Bridge device
-	 */
-	if (dev->priv_flags & IFF_EBRIDGE)
-		return 0;
-
-	/*
-	 * Multi queue
-	 */
-	if (dev->real_num_rx_queues <= 1)
-		return 0;
-
+	RFS_DEBUG("platform dev %s, parent %s\n", dev->name, dev_name(pdev));
 	return 1;
 }
 
+/*
+ * rfs_ess_get_vid
+ * Return: vlan id of the interface, or zero when failed
+ */
+static uint16_t rfs_ess_get_vid(struct net_device *dev)
+{
+	int vid;
+	struct net_device_ops *netdev_ops;
+
+	netdev_ops = dev->netdev_ops;
+	if (!netdev_ops ||
+		!netdev_ops->ndo_get_default_vlan_tag) {
+		RFS_DEBUG("Invalid edma device %s\n", dev->name);
+		return 0;
+	}
+
+	vid =  netdev_ops->ndo_get_default_vlan_tag(dev);
+	if (vid <= 0) {
+		RFS_DEBUG("Invalid vid %d@%s\n", vid, dev->name);
+		return 0;
+	}
+
+	return (uint16_t)vid;
+}
 
 /*
  * rfs_ess_create_vif
@@ -332,27 +335,23 @@ static int rfs_ess_create_vif(struct net_device *dev)
 	uint16_t vid;
 	uint32_t is_l3if;
 	uint32_t  brindex;
-	struct vlan_dev_priv *vlan;
-	struct net_device *real_dev;
-
-	if (!is_vlan_dev(dev))
-		return 0;
 
 	if (!dev->dev_addr) {
 		RFS_DEBUG("Invalid ifname %s\n", dev->name);
 		return -1;
 	}
 
-	vlan = vlan_dev_priv(dev);
-	real_dev = vlan->real_dev;
-	vid =  vlan->vlan_id;
-
 	/*
-	 * make sure the real device is an ess device
+	 * make sure it is an ess device
 	 */
-	if (!rfs_ess_is_ess_phydev(real_dev)) {
-		RFS_DEBUG("The phy device %s is not ess device\n", real_dev->name);
+	if (!rfs_ess_is_ess_phydev(dev)) {
+		RFS_DEBUG("The phy device %s is not ess device\n", dev->name);
 		return 0;
+	}
+
+	vid = rfs_ess_get_vid(dev);
+	if (vid == 0 ) {
+		return -1;
 	}
 
 	is_l3if = rfs_ess_is_l3_dev(dev);
@@ -367,7 +366,7 @@ static int rfs_ess_create_vif(struct net_device *dev)
 		rcu_read_unlock();
 	}
 
-	RFS_DEBUG("vlan dev registered %s vid %d parent %s\n", dev->name, vid, real_dev->name);
+	RFS_DEBUG("vlan dev registered %s vid %d\n", dev->name, vid);
 
 	spin_lock_bh(&ess->vif_lock);
 	vif = ess->vifs;
