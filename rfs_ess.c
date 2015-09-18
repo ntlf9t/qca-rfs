@@ -307,7 +307,7 @@ static int rfs_ess_is_ess_phydev(struct net_device *dev)
 static uint16_t rfs_ess_get_vid(struct net_device *dev)
 {
 	int vid;
-	struct net_device_ops *netdev_ops;
+	const struct net_device_ops *netdev_ops;
 
 	netdev_ops = dev->netdev_ops;
 	if (!netdev_ops ||

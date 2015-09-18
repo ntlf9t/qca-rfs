@@ -10,4 +10,5 @@ qrfs-objs := \
 	rfs_nbr.o \
 	rfs_wxt.o \
 	rfs_rule.o \
-	rfs_ess.o
+	rfs_ess.o \
+	rfs_fdb.o

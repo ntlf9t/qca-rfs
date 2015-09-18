@@ -14,15 +14,16 @@
  */
 
 /*
- * rfs_wxt.c
- *	Receiving Flow Streering - Wireless Extension
+ * rfs_fdb.h
+ *	Receiving Flow Streering - FDB Manager
  */
+#ifndef __RFS_FDB_H
+#define __RFS_FDB_H
 
-#ifndef __RFS_WXT_H
-#define __RFS_WXT_H
-int rfs_wxt_get_cpu(int ifindex);
-int rfs_wxt_start(void);
-int rfs_wxt_stop(void);
-int rfs_wxt_init(void);
-void rfs_wxt_exit(void);
+int rfs_fdb_start(void);
+int rfs_fdb_stop(void);
+
+int rfs_fdb_init(void);
+void rfs_fdb_exit(void);
+
 #endif

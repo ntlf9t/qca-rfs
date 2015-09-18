@@ -36,6 +36,7 @@
 #include "rfs_wxt.h"
 #include "rfs_rule.h"
 #include "rfs_ess.h"
+#include "rfs_fdb.h"
 
 
 static int rfs_start (void);
@@ -227,6 +228,7 @@ static int rfs_start (void)
 	rfs_cm_start();
 	rfs_nbr_start();
 	rfs_wxt_start();
+	rfs_fdb_start();
 	return 0;
 }
 
@@ -236,6 +238,7 @@ static int rfs_start (void)
  */
 static int rfs_stop(void)
 {
+	rfs_fdb_stop();
 	rfs_wxt_stop();
 	rfs_nbr_stop();
 	rfs_cm_stop();
@@ -293,8 +296,17 @@ static int __init rfs_init(void)
 		goto exit5;
 	}
 
+	/*
+	 * FDB management
+	 */
+	if (rfs_fdb_init() < 0) {
+		goto exit6;
+	}
+
 	return 0;
 
+exit6:
+	rfs_wxt_exit();
 exit5:
 	rfs_rule_exit();
 exit4:
@@ -316,6 +328,8 @@ exit1:
 static void __exit rfs_exit(void)
 {
 	RFS_DEBUG("RFS exit\n");
+
+	rfs_fdb_exit();
 
 	rfs_wxt_exit();
 

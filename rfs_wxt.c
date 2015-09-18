@@ -152,7 +152,7 @@ static int rfs_wxt_get_cpu_by_irq(int irq)
 /*
  * rfs_wxt_get_cpu
  */
-static int rfs_wxt_get_cpu(int ifindex)
+int rfs_wxt_get_cpu(int ifindex)
 {
 	int pifi;
 	int irq;
@@ -186,6 +186,7 @@ static int rfs_wxt_get_cpu(int ifindex)
 }
 
 
+#ifdef RFS_USE_IW_EVENT
 /*
  * rfs_wxt_iwevent
  *	wireless event handler
@@ -247,7 +248,7 @@ static int rfs_wxt_newlink(struct ifinfomsg *ifi, unsigned char *buf, size_t len
 
 	return 0;
 }
-
+#endif
 
 /*
  * rfs_wxt_handler
@@ -277,10 +278,13 @@ static int rfs_wxt_handler(unsigned char *buf, int len)
 					rfs_ess_add_brif(ifi->ifi_index);
 				else
 					rfs_ess_del_brif(ifi->ifi_index);
-			} else {
+			}
+#ifdef RFS_USE_IWEVENT
+			else {
 				rfs_wxt_newlink(ifi, (u8 *)ifi + NLMSG_ALIGN(sizeof(struct ifinfomsg)),
 					NLMSG_PAYLOAD(nlh, sizeof(struct ifinfomsg)));
 			}
+#endif
 			break;
 
 		}
@@ -353,7 +357,7 @@ static void rfs_wxt_thread(void)
 		goto exit2;
 	}
 
-	RFS_INFO("rfs_wxt thread started\n");
+	RFS_DEBUG("rfs_wxt thread started\n");
 	while (!kthread_should_stop()) {
 		size = rfs_wxt_rx(__rwn.sock, &saddr, buf, len);
 		RFS_TRACE("got a netlink msg with len %d\n", size);
@@ -368,7 +372,7 @@ static void rfs_wxt_thread(void)
 		}
 	}
 
-	RFS_INFO("rfs_wxt thread stopped\n");
+	RFS_DEBUG("rfs_wxt thread stopped\n");
 exit2:
 	sock_release(__rwn.sock);
 	__rwn.sock = NULL;
