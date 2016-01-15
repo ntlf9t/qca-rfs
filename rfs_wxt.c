@@ -32,6 +32,8 @@
 #include <linux/cpumask.h>
 #include <linux/irqdesc.h>
 #include <net/iw_handler.h>
+#include <linux/of_irq.h>
+#include <linux/platform_device.h>
 #include "rfs.h"
 #include "rfs_rule.h"
 #include "rfs_ess.h"
@@ -105,26 +107,6 @@ exit1:
 
 
 /*
- * rfs_wxt_get_irq
- *	Get IRQ number of a interface
- */
-static int rfs_wxt_get_irq(int ifindex)
-{
-	struct net_device *dev;
-	int irq;
-
-	dev = dev_get_by_index(&init_net, ifindex);
-	if (!dev)
-		return -1;
-
-	irq = dev->irq;
-	dev_put(dev);
-
-	return irq;
-}
-
-
-/*
  * rfs_wxt_get_cpu_by_irq
  */
 static int rfs_wxt_get_cpu_by_irq(int irq)
@@ -150,13 +132,14 @@ static int rfs_wxt_get_cpu_by_irq(int irq)
 
 
 /*
- * rfs_wxt_get_cpu
+ * rfs_wxt_get_irq_proprietary
+ *	Get IRQ number of an interface
  */
-int rfs_wxt_get_cpu(int ifindex)
+static int rfs_wxt_get_irq_proprietary(int ifindex)
 {
 	int pifi;
 	int irq;
-	int cpu;
+	struct net_device *dev;
 
 	/*
 	 * get physic interface wifix
@@ -164,14 +147,77 @@ int rfs_wxt_get_cpu(int ifindex)
 	pifi = rfs_wxt_get_parent(ifindex);
 	RFS_DEBUG("vif %d, parent %d\n", ifindex, pifi);
 	if (pifi < 0)
-		return RPS_NO_CPU;
+		return -1;
 
 	/*
 	 * get irq of physic interface
 	 */
-	irq = rfs_wxt_get_irq(pifi);
+	dev = dev_get_by_index(&init_net, pifi);
+	if (!dev)
+		return -1;
+
+	irq = dev->irq;
+	dev_put(dev);
 	RFS_DEBUG("irq %d\n", irq);
-	if (pifi < 0)
+
+	return irq;
+}
+
+
+/*
+ * rfs_wxt_get_irq_ath10k
+ *	Get IRQ number of an interface
+ */
+static int rfs_wxt_get_irq_ath10k(int ifindex)
+{
+	struct net_device *ndev;
+	struct platform_device *pdev;
+	struct device *dev, *parent;
+	int irq = -1;
+
+	ndev = dev_get_by_index(&init_net, ifindex);
+	if (!ndev)
+		return -1;
+
+	dev = &ndev->dev;
+	parent = dev->parent;
+
+	if (!parent) {
+		dev_put(ndev);
+		RFS_DEBUG("no parent device\n");
+		return -1;
+	}
+
+	pdev = to_platform_device(parent);
+	irq = platform_get_irq_byname(pdev, "legacy");
+
+	dev_put(ndev);
+	RFS_DEBUG("irq %d\n", irq);
+	return irq;
+}
+
+
+/*
+ * rfs_wxt_get_cpu
+ */
+int rfs_wxt_get_cpu(int ifindex)
+{
+	int irq;
+	int cpu;
+
+	/*
+	 * Try proprietary wlan driver first
+	 */
+	irq = rfs_wxt_get_irq_proprietary(ifindex);
+
+	/*
+	 * If failed, let us try ath10k
+	 */
+	if (irq < 0)
+		irq = rfs_wxt_get_irq_ath10k(ifindex);
+
+
+	if (irq < 0)
 		return RPS_NO_CPU;
 
 	/*
