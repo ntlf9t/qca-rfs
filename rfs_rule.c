@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 - 2016, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -301,6 +301,38 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr, uint32_t is_static)
 	spin_unlock_bh(&rr->hash_lock);
 
 	return 0;
+}
+
+
+/*
+ * rfs_rule_find_mac_rule
+ */
+int rfs_rule_find_mac_rule(uint8_t *addr, uint32_t is_static)
+{
+	struct hlist_head *head;
+	struct rfs_rule_entry *re;
+	struct rfs_rule *rr = &__rr;
+	uint32_t type = RFS_RULE_TYPE_MAC_RULE;
+
+	head = &rr->hash[rfs_rule_hash(type, addr)];
+
+	spin_lock_bh(&rr->hash_lock);
+	hlist_for_each_entry_rcu(re, head, hlist) {
+		if (type != re->type)
+			continue;
+
+		if (memcmp(re->mac, addr, ETH_ALEN) == 0) {
+			break;
+		}
+	}
+
+	if (!re || (re->is_static && !is_static)) {
+		spin_unlock_bh(&rr->hash_lock);
+		return 0;
+	}
+
+	spin_unlock_bh(&rr->hash_lock);
+	return 1;
 }
 
 
