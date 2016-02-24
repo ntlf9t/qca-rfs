@@ -26,6 +26,7 @@
 #include <linux/of.h>
 #include <linux/if_vlan.h>
 #include <linux/if_arp.h>
+#include <linux/proc_fs.h>
 #include <net/route.h>
 #include <net/sock.h>
 #include <asm/byteorder.h>

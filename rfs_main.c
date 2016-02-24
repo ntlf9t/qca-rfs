@@ -24,6 +24,7 @@
 #include <net/route.h>
 #include <linux/inetdevice.h>
 #include <linux/netfilter_bridge.h>
+#include <linux/proc_fs.h>
 #include <net/netfilter/nf_conntrack_acct.h>
 #include <net/netfilter/nf_conntrack_helper.h>
 #include <net/netfilter/nf_conntrack_zones.h>
@@ -74,7 +75,8 @@ static struct proc_dir_entry *rfs_enable_entry;
  */
 static int rfs_debug_proc_show(struct seq_file *m, void *v)
 {
-	return seq_printf(m, "%d\n", rfs_dbg_level);
+	seq_printf(m, "%d\n", rfs_dbg_level);
+	return 0;
 }
 
 
@@ -123,7 +125,8 @@ static const struct file_operations debug_proc_fops = {
  */
 static int rfs_enable_proc_show(struct seq_file *m, void *v)
 {
-	return seq_printf(m, "%d\n", rfs_enable);
+	seq_printf(m, "%d\n", rfs_enable);
+	return 0;
 }
 
 

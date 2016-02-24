@@ -24,6 +24,7 @@
 #include <linux/jhash.h>
 #include <linux/inetdevice.h>
 #include <linux/netfilter_bridge.h>
+#include <linux/proc_fs.h>
 #include <net/route.h>
 #include <net/sock.h>
 #include <net/netfilter/nf_conntrack_acct.h>

@@ -18,6 +18,7 @@
  *	Receiving Flow Streering - Wireless Extension
  */
 
+#include <linux/version.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/kthread.h>
@@ -116,7 +117,11 @@ static int rfs_wxt_get_cpu_by_irq(int irq)
 	int cpu;
 
 	desc = irq_to_desc(irq);
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0))
 	mask = desc->irq_data.affinity;
+#else
+	mask = desc->irq_data.common->affinity;
+#endif
 	cpu = cpumask_first(mask);
 	if (cpu >= nr_cpu_ids) {
 		return -1;
@@ -362,9 +367,12 @@ static int rfs_wxt_rx(struct socket *sock, struct sockaddr_nl *addr, unsigned ch
 	msg.msg_namelen = sizeof(struct sockaddr_nl);
 	msg.msg_control = NULL;
 	msg.msg_controllen = 0;
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(3, 19, 0))
 	msg.msg_iov   = &iov;
 	msg.msg_iovlen = 1;
-
+#else
+	iov_iter_init(&msg.msg_iter, READ, &iov, 1, 1);
+#endif
 	oldfs = get_fs();
 	set_fs(KERNEL_DS);
 	size = sock_recvmsg(sock, &msg, len, msg.msg_flags);
