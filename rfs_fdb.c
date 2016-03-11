@@ -103,7 +103,10 @@ static struct net_device *fdb_get_brport_by_mac(unsigned char *mac)
 #if (LINUX_VERSION_CODE == KERNEL_VERSION(3, 18, 21))
 		ndev = br_port_dev_get(dev, mac);
 #else
-		ndev = br_port_dev_get(dev, mac, NULL);
+		/*
+		 * Pass in NULL (for skb) and 0 for cookie since doing FDB lookup only
+		 */
+		ndev = br_port_dev_get(dev, mac, NULL, 0);
 #endif
 		if (ndev)
 			break;
