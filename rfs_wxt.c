@@ -128,7 +128,8 @@ static int rfs_wxt_get_cpu_by_irq(int irq)
 	}
 
 	if (cpumask_next(cpu, mask) < nr_cpu_ids) {
-		RFS_INFO("IRQ is bound to more than one CPU\n");
+		if(net_ratelimit())
+			RFS_INFO("IRQ is bound to more than one CPU\n");
 		return -1;
 	}
 
