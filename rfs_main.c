@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 - 2016, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -137,11 +137,14 @@ static ssize_t rfs_enable_proc_write(struct file *file, const char __user *buffe
 			size_t count, loff_t *ppos)
 {
 	unsigned long val;
+	struct seq_file *m = file->private_data;
 	int err = kstrtoul_from_user(buffer, count, 0, &val);
 	if (err)
 		return err;
 
+	mutex_lock(&m->lock);
 	if (rfs_enable == val) {
+		mutex_unlock(&m->lock);
 		return count;
 	}
 
@@ -152,6 +155,7 @@ static ssize_t rfs_enable_proc_write(struct file *file, const char __user *buffe
 	}
 
 	rfs_enable = !!val;
+	mutex_unlock(&m->lock);
 	return count;
 
 }
