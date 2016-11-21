@@ -35,6 +35,7 @@
 #include <net/iw_handler.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/pci.h>
 #include "rfs.h"
 #include "rfs_rule.h"
 #include "rfs_ess.h"
@@ -178,6 +179,7 @@ static int rfs_wxt_get_irq_ath10k(int ifindex)
 {
 	struct net_device *ndev;
 	struct platform_device *pdev;
+	struct pci_dev *pci_dev;
 	struct device *dev, *parent;
 	int irq = -1;
 
@@ -189,14 +191,27 @@ static int rfs_wxt_get_irq_ath10k(int ifindex)
 	parent = dev->parent;
 
 	if (!parent) {
-		dev_put(ndev);
 		RFS_DEBUG("no parent device\n");
-		return -1;
+		goto exit;
 	}
 
-	pdev = to_platform_device(parent);
-	irq = platform_get_irq_byname(pdev, "legacy");
+	if (!parent->bus) {
+		RFS_DEBUG("no bus type\n");
+		goto exit;
+	}
 
+	if (!strcmp(parent->bus->name, "platform")) {
+		pdev = to_platform_device(parent);
+		irq = platform_get_irq_byname(pdev, "legacy");
+	} else if (!strcmp(parent->bus->name, "pci")) {
+		pci_dev = to_pci_dev(parent);
+		irq = pci_dev->irq;
+	} else {
+		RFS_DEBUG("invalid bus type\n");
+		goto exit;
+	}
+
+exit:
 	dev_put(ndev);
 	RFS_DEBUG("irq %d\n", irq);
 	return irq;
