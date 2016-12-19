@@ -429,6 +429,7 @@ static void rfs_wxt_thread(void)
 
 	RFS_DEBUG("rfs_wxt thread stopped\n");
 exit2:
+	__rwn.thread = NULL;
 	sock_release(__rwn.sock);
 	__rwn.sock = NULL;
 
@@ -445,6 +446,7 @@ int rfs_wxt_start(void)
 	__rwn.thread = kthread_run((void*)rfs_wxt_thread, NULL, "rfs_wxt");
 	if (IS_ERR(__rwn.thread)) {
 		RFS_ERROR("Unable to start kernel thread\n");
+		__rwn.thread = NULL;
 		return -ENOMEM;
 	}
 
@@ -463,7 +465,8 @@ int rfs_wxt_stop(void)
 
 	RFS_DEBUG("kill rfs_wxt thread");
 	force_sig(SIGKILL, __rwn.thread);
-	err = kthread_stop(__rwn.thread);
+	if (__rwn.thread)
+		err = kthread_stop(__rwn.thread);
 	__rwn.thread = NULL;
 
 	return err;
