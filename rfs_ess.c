@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 - 2015, 2017 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -358,7 +358,7 @@ static int rfs_ess_create_vif(struct net_device *dev)
 	is_l3if = rfs_ess_is_l3_dev(dev);
 
 	brindex = 0;
-	if (dev->priv_flags | IFF_BRIDGE_PORT) {
+	if (dev->priv_flags & IFF_BRIDGE_PORT) {
 		struct net_device *brdev;
 		rcu_read_lock();
 		brdev = netdev_master_upper_dev_get_rcu(dev);
@@ -379,6 +379,10 @@ static int rfs_ess_create_vif(struct net_device *dev)
 
 	if (!vif) {
 		vif = kzalloc(sizeof(struct rfs_vif), GFP_ATOMIC);
+		if (!vif) {
+			RFS_WARN("alloc failed\n");
+			return -1;
+		}
 		vif->next = ess->vifs;
 		ess->vifs = vif;
 	}
@@ -485,7 +489,7 @@ int rfs_ess_add_brif(uint32_t ifindex)
 	if (!dev)
 		return -1;
 
-	if (!(dev->priv_flags | IFF_BRIDGE_PORT)) {
+	if (!(dev->priv_flags & IFF_BRIDGE_PORT)) {
 		dev_put(dev);
 		return -1;
 	}
@@ -1130,7 +1134,7 @@ void rfs_ess_exit(void)
 	struct rfs_ess *ess = &__ess;
 
 	RFS_DEBUG("RFS ess exit\n");
-	if (ess->proc_vif);
+	if (ess->proc_vif)
 		remove_proc_entry("vif", rfs_proc_entry);
 
 	rfs_ess_stop();

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 - 2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 - 2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -180,12 +180,7 @@ static void __rfs_rule_update_iprule_by_mac(uint8_t *addr, uint16_t cpu)
 			if (re->cpu == cpu)
 				continue;
 
-			if (rfs_ess_update_ip_rule(re, cpu) < 0) {
-				if (re->type == RFS_RULE_TYPE_IP4_RULE)
-					RFS_WARN("Failed to update IP rule %pI4, cpu %d\n", addr, cpu);
-				else
-					RFS_WARN("Failed to update IP rule %pI6, cpu %d\n", addr, cpu);
-			}
+			rfs_ess_update_ip_rule(re, cpu);
 			re->cpu = cpu;
 
 		}
@@ -245,9 +240,8 @@ int rfs_rule_create_mac_rule(uint8_t *addr, uint16_t cpu, uint32_t hvid, uint32_
 
 
 	RFS_DEBUG("New MAC rule %pM, cpu %d\n", addr, cpu);
-	if (re->cpu != cpu &&
-		rfs_ess_update_mac_rule(re, cpu) < 0) {
-		RFS_WARN("Failed to update MAC rule %pM, cpu %d\n", addr, cpu);
+	if (re->cpu != cpu ) {
+		rfs_ess_update_mac_rule(re, cpu);
 	}
 
 	re->is_static = is_static;
@@ -291,9 +285,7 @@ int rfs_rule_destroy_mac_rule(uint8_t *addr, uint32_t is_static)
 	cpu = re->cpu;
 
 	RFS_DEBUG("Remove rules: %pM, cpu %d\n", addr, cpu);
-	if (rfs_ess_update_mac_rule(re, RPS_NO_CPU) < 0) {
-		RFS_WARN("Failed to update mac rules: %pM, cpu %d\n", addr, cpu);
-	}
+	rfs_ess_update_mac_rule(re, RPS_NO_CPU);
 
 	re->cpu = RPS_NO_CPU;
 	call_rcu(&re->rcu, rfs_rule_rcu_free);
@@ -407,12 +399,8 @@ int rfs_rule_create_ip_rule(int family, uint8_t *ipaddr, uint8_t *maddr,
 	else
 		RFS_DEBUG("New IP rule %pI6, cpu %d\n", ipaddr, cpu);
 
-	if (re->cpu != cpu &&
-		rfs_ess_update_ip_rule(re, cpu) < 0) {
-		if (re->type == RFS_RULE_TYPE_IP4_RULE)
-			RFS_WARN("Failed to create IP rule %pI4, cpu %d\n", ipaddr, cpu);
-		else
-			RFS_WARN("Failed to create IP rule %pI6, cpu %d\n", ipaddr, cpu);
+	if (re->cpu != cpu) {
+		rfs_ess_update_ip_rule(re, cpu);
 	}
 
 	re->is_static = is_static;
@@ -460,12 +448,8 @@ int rfs_rule_destroy_ip_rule(int family, uint8_t *ipaddr, uint32_t is_static)
 	else
 		RFS_DEBUG("Remove IP rule %pI6, cpu %d\n", ipaddr, cpu);
 
-	if (cpu != RPS_NO_CPU &&
-		rfs_ess_update_ip_rule(re, RPS_NO_CPU) < 0) {
-		if (re->type == RFS_RULE_TYPE_IP4_RULE)
-			RFS_WARN("Failed to remove IP rule %pI4, cpu %d\n", ipaddr, re->cpu);
-		else
-			RFS_WARN("Failed to remove IP rule %pI6, cpu %d\n", ipaddr, re->cpu);
+	if (cpu != RPS_NO_CPU) {
+		rfs_ess_update_ip_rule(re, RPS_NO_CPU);
 	}
 
 	re->cpu = RPS_NO_CPU;
