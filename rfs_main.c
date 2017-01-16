@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 - 2016, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 - 2017, The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -278,50 +278,29 @@ static int __init rfs_init(void)
 	/*
 	 * IPv4 connection management
 	 */
-	if (rfs_cm_init() < 0) {
-		goto exit2;
-	}
+	(void)rfs_cm_init();
 
 	/*
 	 * IP neighbor management
 	 */
-	if (rfs_nbr_init() < 0) {
-		goto exit3;
-	}
-
+	(void)rfs_nbr_init();
 	/*
 	 * RFS rules
 	 */
-	if ( rfs_rule_init() < 0) {
-		goto exit4;
-	}
+	(void)rfs_rule_init();
 
 	/*
 	 * wireless extension
 	 */
-	if (rfs_wxt_init() < 0) {
-		goto exit5;
-	}
+	(void)rfs_wxt_init();
 
 	/*
 	 * FDB management
 	 */
-	if (rfs_fdb_init() < 0) {
-		goto exit6;
-	}
+	(void)rfs_fdb_init();
 
 	return 0;
 
-exit6:
-	rfs_wxt_exit();
-exit5:
-	rfs_rule_exit();
-exit4:
-	rfs_nbr_exit();
-exit3:
-	rfs_cm_exit();
-exit2:
-	rfs_ess_exit();
 exit1:
 	rfs_proc_exit();
 

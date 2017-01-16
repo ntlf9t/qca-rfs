@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 - 2015, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 - 2015, 2017 The Linux Foundation. All rights reserved.
  *
  * Permission to use, copy, modify, and/or distribute this software for
  * any purpose with or without fee is hereby granted, provided that the
@@ -356,8 +356,8 @@ int rfs_cm_update_rules(__be32 ipaddr, uint16_t cpu)
 		if (cpu == ce->cpu)
 			continue;
 		RFS_DEBUG("Connection cpu change %d --> %d\n", ce->cpu, cpu);
-		if (rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, cpu) >= 0)
-			ce->cpu = cpu;
+		rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, cpu);
+		ce->cpu = cpu;
 	}
 
 
@@ -368,8 +368,8 @@ int rfs_cm_update_rules(__be32 ipaddr, uint16_t cpu)
 		if (cpu == ce->cpu)
 			continue;
 		RFS_DEBUG("Connection cpu change %d --> %d\n", ce->cpu, cpu);
-		if (rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, cpu) >= 0)
-			ce->cpu = cpu;
+		rfs_ess_update_tuple_rule(ce->orig_rxhash, ce->reply_rxhash, cpu);
+		ce->cpu = cpu;
 	}
 
 	spin_unlock_bh(&cm->hash_lock);
