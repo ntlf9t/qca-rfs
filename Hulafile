@@ -1,0 +1,22 @@
+name 'qca-rfs'
+
+dep 'linux'
+
+make_args = %W[
+  CC=#{getenv("CC")}
+  LD=#{getenv("LD")}
+  AR=#{getenv("AR")}
+  KCFLAGS=-march=#{host_config.arch}
+  ARCH=#{host_config.arch_short}
+  -C#{host_config.sysroot}/lib/modules/build
+  M=#{srcroot}
+  INSTALL_MOD_PATH=#{dstroot}
+  KERNELPATH=#{host_config.sysroot}/lib/modules/build
+  V=1
+]
+
+build do
+  make *make_args
+  make 'modules_install', *make_args
+end
+
